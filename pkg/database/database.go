@@ -23,13 +23,13 @@ func New(opts *MongoOptions, client ...DatabaseInterface) (*Database, error) {
 	// If no client provided, create default production client
 	var m DatabaseInterface
 	if len(client) == 0 {
-		m = NewMongoClient(opts)
+		m, err = NewMongoClient(opts)
 	} else {
-		m = client[0]
+		m, err = client[0], nil
 	}
 
 	return &Database{
 		options: opts,
 		client:  m,
-	}, nil
+	}, err
 }
