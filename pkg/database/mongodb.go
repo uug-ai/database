@@ -6,6 +6,7 @@ import (
 	"os"
 	"time"
 
+	"github.com/go-playground/validator/v10"
 	"go.mongodb.org/mongo-driver/mongo"
 )
 
@@ -87,7 +88,7 @@ func (m *MongoClient) Ping() error {
 // MongoOptions holds the configuration for Mongo
 type MongoOptions struct {
 	Uri                 string `validate:"required"`
-	Host                int    `validate:"required,gt=0"`
+	Host                string `validate:"required"`
 	DatabaseCredentials string `validate:"required"`
 	ReplicaSet          string `validate:"required"`
 	Username            string `validate:"required"`
@@ -107,15 +108,44 @@ func NewMongoOptions() *MongoOptionsBuilder {
 }
 
 // SetUri set
-func (b *MongoOptionsBuilder) SetServer(server string) *MongoOptionsBuilder {
-	b.options.Server = server
+func (b *MongoOptionsBuilder) SetUri(uri string) *MongoOptionsBuilder {
+	b.options.Uri = uri
 	return b
 }
 
-// SetPort sets the SMTP server port
-func (b *MongoOptionsBuilder) SetPort(port int) *MongoOptionsBuilder {
-	b.options.Port = port
+// SetHost sets the host
+func (b *MongoOptionsBuilder) SetHost(host string) *MongoOptionsBuilder {
+	b.options.Host = host
 	return b
+}
+
+// SetDatabaseCredentials sets the database credentials
+func (b *MongoOptionsBuilder) SetDatabaseCredentials(creds string) *MongoOptionsBuilder {
+	b.options.DatabaseCredentials = creds
+	return b
+}
+
+// SetReplicaSet sets the replica set
+func (b *MongoOptionsBuilder) SetReplicaSet(replicaSet string) *MongoOptionsBuilder {
+	b.options.ReplicaSet = replicaSet
+	return b
+}
+
+// SetUsername sets the username
+func (b *MongoOptionsBuilder) SetUsername(username string) *MongoOptionsBuilder {
+	b.options.Username = username
+	return b
+}
+
+// SetPassword sets the password
+func (b *MongoOptionsBuilder) SetPassword(password string) *MongoOptionsBuilder {
+	b.options.Password = password
+	return b
+}
+
+// Build builds the Mongo options
+func (b *MongoOptionsBuilder) Build() *MongoOptions {
+	return b.options
 }
 
 // SMTP represents an SMTP client instance
@@ -133,16 +163,16 @@ func NewMongo(opts *MongoOptions, client ...DatabaseInterface) (*SMTP, error) {
 	}
 
 	// If no client provided, create default production client
-	var c MailClient
+	var m MongoClient
 	if len(client) == 0 {
-		c = NewGomailClient(opts.Server, opts.Port, opts.Username, opts.Password)
+		m = NewMongoClient(opts.Uri, opts.Host, opts.Port, opts.Username, opts.Password)
 	} else {
-		c = client[0]
+		m = client[0]
 	}
 
 	return &SMTP{
 		options: opts,
-		client:  c,
+		client:  m,
 	}, nil
 }
 
