@@ -6,93 +6,22 @@ import (
 	"os"
 	"time"
 
-	"github.com/go-playground/validator/v10"
 	"go.mongodb.org/mongo-driver/mongo"
+	moptions "go.mongodb.org/mongo-driver/mongo/options"
+	"go.opentelemetry.io/contrib/instrumentation/go.mongodb.org/mongo-driver/mongo/otelmongo"
 )
-
-// MongoClient wraps mongo.Client to implement DatabaseInterface
-type MongoClient struct {
-	Client *mongo.Client
-}
-
-var (
-	TIMEOUT = 10 * time.Second
-)
-
-// NewMongoClient creates a new MongoClient with the provided MongoDB settings
-func NewMongoClient(uri string,
-	host string,
-	port int,
-	username string,
-	password string) DatabaseInterface {
-
-	// We can also apply the complete URI
-	// e.g. "mongodb+srv://<username>:<password>@kerberos-hub.shhng.mongodb.net/?retryWrites=true&w=majority&appName=kerberos-hub"
-	if uri != "" {
-		serverAPI := options.ServerAPI(options.ServerAPIVersion1)
-		opts := options.Client().
-			ApplyURI(uri).
-			SetServerAPIOptions(serverAPI).
-			SetRetryWrites(retryWrites).
-			SetMonitor(otelmongo.NewMonitor(otelmongo.WithCommandAttributeDisabled(false)))
-
-		// Create a new client and connect to the server
-		client, err := mongo.Connect(ctx, opts)
-		if err != nil {
-			fmt.Printf("Error setting up mongodb connection: %+v\n", err)
-			os.Exit(1)
-		}
-
-		return &MongoClient{
-			Client: client,
-		}
-
-	} else {
-
-		// New MongoDB driver
-		uri := fmt.Sprintf("mongodb://%s:%s@%s", username, password, host)
-		if replicaset != "" {
-			uri = fmt.Sprintf("%s/?replicaSet=%s", uri, replicaset)
-		}
-		if authenticationMechanism == "" {
-			authenticationMechanism = "SCRAM-SHA-256"
-		}
-		client, err := mongo.Connect(ctx, options.Client().
-			ApplyURI(uri).
-			SetRetryWrites(retryWrites).
-			SetAuth(options.Credential{
-				AuthMechanism: authenticationMechanism,
-				AuthSource:    databaseCredentials,
-				Username:      username,
-				Password:      password,
-			}))
-
-		if err != nil {
-			fmt.Printf("Error setting up mongodb connection: %+v\n", err)
-			os.Exit(1)
-		}
-
-		return &MongoClient{
-			Client: client,
-		}
-	}
-}
-
-func (m *MongoClient) Ping() error {
-	ctx, cancel := context.WithTimeout(context.Background(), TIMEOUT)
-	defer cancel()
-	err := m.Client.Ping(ctx, nil)
-	return err
-}
 
 // MongoOptions holds the configuration for Mongo
 type MongoOptions struct {
-	Uri                 string `validate:"required"`
-	Host                string `validate:"required"`
-	DatabaseCredentials string `validate:"required"`
-	ReplicaSet          string `validate:"required"`
-	Username            string `validate:"required"`
-	Password            string `validate:"required"`
+	Uri           string `validate:"required"`
+	Host          string `validate:"required"`
+	AuthSource    string `validate:"required"`
+	AuthMechanism string `validate:"required"`
+	ReplicaSet    string `validate:"required"`
+	Username      string `validate:"required"`
+	Password      string `validate:"required"`
+	Timeout       int    `validate:"required,gte=0"`
+	RetryWrites   bool
 }
 
 // MongoOptionsBuilder provides a fluent interface for building Mongo options
@@ -119,9 +48,15 @@ func (b *MongoOptionsBuilder) SetHost(host string) *MongoOptionsBuilder {
 	return b
 }
 
-// SetDatabaseCredentials sets the database credentials
-func (b *MongoOptionsBuilder) SetDatabaseCredentials(creds string) *MongoOptionsBuilder {
-	b.options.DatabaseCredentials = creds
+// SetAuthSource sets the authentication source
+func (b *MongoOptionsBuilder) SetAuthSource(authSource string) *MongoOptionsBuilder {
+	b.options.AuthSource = authSource
+	return b
+}
+
+// SetAuthMechanism sets the authentication mechanism
+func (b *MongoOptionsBuilder) SetAuthMechanism(authMechanism string) *MongoOptionsBuilder {
+	b.options.AuthMechanism = authMechanism
 	return b
 }
 
@@ -143,109 +78,90 @@ func (b *MongoOptionsBuilder) SetPassword(password string) *MongoOptionsBuilder 
 	return b
 }
 
+// SetTimeout sets the timeout
+func (b *MongoOptionsBuilder) SetTimeout(timeout int) *MongoOptionsBuilder {
+	b.options.Timeout = timeout
+	return b
+}
+
+// SetRetryWrites sets the retry writes option
+func (b *MongoOptionsBuilder) SetRetryWrites(retryWrites bool) *MongoOptionsBuilder {
+	b.options.RetryWrites = retryWrites
+	return b
+}
+
 // Build builds the Mongo options
 func (b *MongoOptionsBuilder) Build() *MongoOptions {
 	return b.options
 }
 
-// SMTP represents an SMTP client instance
-type SMTP struct {
+// MongoClient wraps mongo.Client to implement DatabaseInterface
+type MongoClient struct {
+	Client  *mongo.Client
 	options *MongoOptions
-	client  DatabaseInterface
 }
 
-func NewMongo(opts *MongoOptions, client ...DatabaseInterface) (*SMTP, error) {
-	// Validate SMTP configuration
-	validate := validator.New()
-	err := validate.Struct(opts)
-	if err != nil {
-		return nil, err
-	}
+// NewMongoClient creates a new MongoClient with the provided MongoDB settings
+func NewMongoClient(options *MongoOptions) DatabaseInterface {
 
-	// If no client provided, create default production client
-	var m MongoClient
-	if len(client) == 0 {
-		m = NewMongoClient(opts.Uri, opts.Host, opts.Port, opts.Username, opts.Password)
-	} else {
-		m = client[0]
-	}
-
-	return &SMTP{
-		options: opts,
-		client:  m,
-	}, nil
-}
-
-/*type DB struct {
-	Client *mongo.Client
-}
-
-var TIMEOUT = 10 * time.Second
-var _init_ctx sync.Once
-var _instance *DB
-
-var DatabaseName = os.Getenv("MONGODB_DATABASE_CLOUD")
-
-func New() *DB {
-
-	mongodbURI := os.Getenv("MONGODB_URI")
-	host := os.Getenv("MONGODB_HOST")
-	databaseCredentials := os.Getenv("MONGODB_DATABASE_CREDENTIALS")
-	replicaset := os.Getenv("MONGODB_REPLICASET")
-	username := os.Getenv("MONGODB_USERNAME")
-	password := os.Getenv("MONGODB_PASSWORD")
-	authenticationMechanism := os.Getenv("MONGODB_AUTHENTICATION_MECHANISM")
-	retryWrites := os.Getenv("MONGODB_RETRY_WRITES") != "false" // Default to true unless explicitly set to "false"
-
-	ctx, cancel := context.WithTimeout(context.Background(), TIMEOUT)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(options.Timeout)*time.Millisecond)
 	defer cancel()
 
-	_init_ctx.Do(func() {
-		_instance = new(DB)
+	// We can also apply the complete URI
+	// e.g. "mongodb+srv://<username>:<password>@kerberos-hub.shhng.mongodb.net/?retryWrites=true&w=majority&appName=kerberos-hub"
+	if options.Uri != "" {
+		serverAPI := moptions.ServerAPI(moptions.ServerAPIVersion1)
+		opts := moptions.Client().
+			ApplyURI(options.Uri).
+			SetServerAPIOptions(serverAPI).
+			SetRetryWrites(options.RetryWrites).
+			SetMonitor(otelmongo.NewMonitor(otelmongo.WithCommandAttributeDisabled(false)))
 
-		// We can also apply the complete URI
-		// e.g. "mongodb+srv://<username>:<password>@kerberos-hub.shhng.mongodb.net/?retryWrites=true&w=majority&appName=kerberos-hub"
-		if mongodbURI != "" {
-			serverAPI := options.ServerAPI(options.ServerAPIVersion1)
-			opts := options.Client().
-				ApplyURI(mongodbURI).
-				SetServerAPIOptions(serverAPI).
-				SetRetryWrites(retryWrites).
-				SetMonitor(otelmongo.NewMonitor(otelmongo.WithCommandAttributeDisabled(false)))
-
-			// Create a new client and connect to the server
-			client, err := mongo.Connect(ctx, opts)
-			if err != nil {
-				fmt.Printf("Error setting up mongodb connection: %+v\n", err)
-				os.Exit(1)
-			}
-			_instance.Client = client
-
-		} else {
-
-			// New MongoDB driver
-			mongodbURI := fmt.Sprintf("mongodb://%s:%s@%s", username, password, host)
-			if replicaset != "" {
-				mongodbURI = fmt.Sprintf("%s/?replicaSet=%s", mongodbURI, replicaset)
-			}
-			if authenticationMechanism == "" {
-				authenticationMechanism = "SCRAM-SHA-256"
-			}
-			client, err := mongo.Connect(ctx, options.Client().ApplyURI(mongodbURI).SetRetryWrites(retryWrites).SetAuth(options.Credential{
-				AuthMechanism: authenticationMechanism,
-				AuthSource:    databaseCredentials,
-				Username:      username,
-				Password:      password,
-			}))
-			if err != nil {
-				fmt.Printf("Error setting up mongodb connection: %+v\n", err)
-				os.Exit(1)
-			}
-			_instance.Client = client
+		// Create a new client and connect to the server
+		client, err := mongo.Connect(ctx, opts)
+		if err != nil {
+			fmt.Printf("Error setting up mongodb connection: %+v\n", err)
+			os.Exit(1)
 		}
-	})
 
-	return _instance
+		return &MongoClient{
+			Client: client,
+		}
+
+	}
+
+	// If we don't have a full URI, build it from components such as host, username, password, etc.
+	// This will give less flexibility than a full URI, but is provided for convenience.
+	uri := fmt.Sprintf("mongodb://%s:%s@%s", options.Username, options.Password, options.Host)
+	if options.ReplicaSet != "" {
+		uri = fmt.Sprintf("%s/?replicaSet=%s", uri, options.ReplicaSet)
+	}
+	if options.AuthMechanism == "" {
+		options.AuthMechanism = "SCRAM-SHA-256"
+	}
+	client, err := mongo.Connect(ctx, moptions.Client().
+		ApplyURI(uri).
+		SetRetryWrites(options.RetryWrites).
+		SetAuth(moptions.Credential{
+			AuthMechanism: options.AuthMechanism,
+			AuthSource:    options.AuthSource,
+			Username:      options.Username,
+			Password:      options.Password,
+		}))
+
+	if err != nil {
+		fmt.Printf("Error setting up mongodb connection: %+v\n", err)
+		os.Exit(1)
+	}
+
+	return &MongoClient{
+		Client: client,
+	}
 }
 
-*/
+func (m *MongoClient) Ping() error {
+	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(m.options.Timeout)*time.Millisecond)
+	defer cancel()
+	err := m.Client.Ping(ctx, nil)
+	return err
+}
