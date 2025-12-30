@@ -1,7 +1,6 @@
 {
     "go.testEnvVars": {
         "MONGODB_URI": "mongodb+srv://xxx:xxxx@xxxx.mongodb.net/?retryWrites=true&w=majority",
-        "MONGODB_DATABASE_CLOUD": "",
         "MONGODB_HOST": "",
         "MONGODB_DATABASE_CREDENTIALS": "",
         "MONGODB_USERNAME": "",

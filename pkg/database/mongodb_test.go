@@ -119,34 +119,6 @@ func TestMongoOptionsValidation(t *testing.T) {
 			expectError: true,
 		},
 		{
-			name: "MissingAuthMechanismWhenNoUri",
-			buildOpts: func() *MongoOptions {
-				return NewMongoOptions().
-					SetHost("localhost").
-					SetAuthSource("admin").
-					SetReplicaSet("rs0").
-					SetUsername("user").
-					SetPassword("pass").
-					SetTimeout(5000).
-					Build()
-			},
-			expectError: true,
-		},
-		{
-			name: "MissingReplicaSetWhenNoUri",
-			buildOpts: func() *MongoOptions {
-				return NewMongoOptions().
-					SetHost("localhost").
-					SetAuthSource("admin").
-					SetAuthMechanism("SCRAM-SHA-256").
-					SetUsername("user").
-					SetPassword("pass").
-					SetTimeout(5000).
-					Build()
-			},
-			expectError: true,
-		},
-		{
 			name: "MissingTimeout",
 			buildOpts: func() *MongoOptions {
 				return NewMongoOptions().
@@ -263,10 +235,6 @@ func TestMongoOptionsBuilder(t *testing.T) {
 }
 
 func TestMongodbLiveIntegration(t *testing.T) {
-	mongodbUri := os.Getenv("MONGODB_URI")
-	if mongodbUri == "" {
-		t.Skip("Skipping live integration test: MONGODB_URI not set")
-	}
 
 	tests := []struct {
 		name        string
@@ -274,11 +242,30 @@ func TestMongodbLiveIntegration(t *testing.T) {
 		expectError bool
 	}{
 		{
-			name: "LiveIntegrationTest",
+			name: "UriIntegrationTest",
 			buildOpts: func() *MongoOptions {
+				mongodbUri := os.Getenv("MONGODB_URI")
 				return NewMongoOptions().
 					SetUri(mongodbUri).
 					SetTimeout(2000).
+					Build()
+			},
+			expectError: false,
+		},
+		{
+			name: "ComponentsIntegrationTest",
+			buildOpts: func() *MongoOptions {
+				mongodbHost := os.Getenv("MONGODB_HOST")
+				mongodbAuthSource := os.Getenv("MONGODB_DATABASE_CREDENTIALS")
+				mongodbUsername := os.Getenv("MONGODB_USERNAME")
+				mongodbPassword := os.Getenv("MONGODB_PASSWORD")
+
+				return NewMongoOptions().
+					SetHost(mongodbHost).
+					SetAuthSource(mongodbAuthSource).
+					SetUsername(mongodbUsername).
+					SetPassword(mongodbPassword).
+					SetTimeout(5000).
 					Build()
 			},
 			expectError: false,

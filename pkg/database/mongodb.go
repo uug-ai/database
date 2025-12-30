@@ -15,11 +15,11 @@ type MongoOptions struct {
 	Uri           string `validate:"required_without=Host"`
 	Host          string `validate:"required_without=Uri"`
 	AuthSource    string `validate:"required_without=Uri"`
-	AuthMechanism string `validate:"required_without=Uri"`
-	ReplicaSet    string `validate:"required_without=Uri"`
 	Username      string `validate:"required_without=Uri"`
 	Password      string `validate:"required_without=Uri"`
 	Timeout       int    `validate:"required,gte=0"`
+	AuthMechanism string
+	ReplicaSet    string
 	RetryWrites   bool
 }
 
@@ -128,14 +128,24 @@ func newMongoClientFromURI(ctx context.Context, options *MongoOptions) (Database
 }
 
 func newMongoClientFromComponents(ctx context.Context, options *MongoOptions) (DatabaseInterface, error) {
-	uri := fmt.Sprintf("mongodb://%s:%s@%s", options.Username, options.Password, options.Host)
+	// Check if host contains mongodb.net (Atlas) - use mongodb+srv://
+	protocol := "mongodb://"
+	if len(options.Host) > 11 && options.Host[len(options.Host)-11:] == "mongodb.net" {
+		protocol = "mongodb+srv://"
+	}
+
+	uri := fmt.Sprintf("%s%s:%s@%s", protocol, options.Username, options.Password, options.Host)
+	// Specify the ReplicaSet if provided (not needed for SRV)
 	if options.ReplicaSet != "" {
 		uri = fmt.Sprintf("%s/?replicaSet=%s", uri, options.ReplicaSet)
 	}
+
+	// Default to SCRAM-SHA-256 if no AuthMechanism is provided
 	if options.AuthMechanism == "" {
 		options.AuthMechanism = "SCRAM-SHA-256"
 	}
-	client, err := mongo.Connect(ctx, moptions.Client().
+
+	clientOpts := moptions.Client().
 		ApplyURI(uri).
 		SetRetryWrites(options.RetryWrites).
 		SetAuth(moptions.Credential{
@@ -143,7 +153,15 @@ func newMongoClientFromComponents(ctx context.Context, options *MongoOptions) (D
 			AuthSource:    options.AuthSource,
 			Username:      options.Username,
 			Password:      options.Password,
-		}))
+		})
+
+	// Add ServerAPI for Atlas connections
+	if protocol == "mongodb+srv://" {
+		serverAPI := moptions.ServerAPI(moptions.ServerAPIVersion1)
+		clientOpts.SetServerAPIOptions(serverAPI)
+	}
+
+	client, err := mongo.Connect(ctx, clientOpts)
 	return &MongoClient{
 		Client:  client,
 		options: options,
