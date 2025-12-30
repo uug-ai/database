@@ -1,6 +1,7 @@
 package database
 
 import (
+	"os"
 	"testing"
 )
 
@@ -27,12 +28,6 @@ func TestMongoOptionsValidation(t *testing.T) {
 			buildOpts: func() *MongoOptions {
 				return NewMongoOptions().
 					SetUri("mongodb://user:pass@localhost:27017").
-					SetHost("localhost").
-					SetAuthSource("admin").
-					SetAuthMechanism("SCRAM-SHA-256").
-					SetReplicaSet("rs0").
-					SetUsername("user").
-					SetPassword("pass").
 					SetTimeout(5000).
 					Build()
 			},
@@ -42,7 +37,6 @@ func TestMongoOptionsValidation(t *testing.T) {
 			name: "ValidOptionsWithComponents",
 			buildOpts: func() *MongoOptions {
 				return NewMongoOptions().
-					SetUri("mongodb://placeholder").
 					SetHost("localhost").
 					SetAuthSource("admin").
 					SetAuthMechanism("SCRAM-SHA-256").
@@ -55,10 +49,9 @@ func TestMongoOptionsValidation(t *testing.T) {
 			expectError: false,
 		},
 		{
-			name: "MissingUri",
+			name: "MissingUriAndHost",
 			buildOpts: func() *MongoOptions {
 				return NewMongoOptions().
-					SetHost("localhost").
 					SetAuthSource("admin").
 					SetAuthMechanism("SCRAM-SHA-256").
 					SetReplicaSet("rs0").
@@ -70,10 +63,9 @@ func TestMongoOptionsValidation(t *testing.T) {
 			expectError: true,
 		},
 		{
-			name: "MissingHost",
+			name: "MissingHostWhenNoUri",
 			buildOpts: func() *MongoOptions {
 				return NewMongoOptions().
-					SetUri("mongodb://localhost").
 					SetAuthSource("admin").
 					SetAuthMechanism("SCRAM-SHA-256").
 					SetReplicaSet("rs0").
@@ -85,10 +77,9 @@ func TestMongoOptionsValidation(t *testing.T) {
 			expectError: true,
 		},
 		{
-			name: "MissingUsername",
+			name: "MissingUsernameWhenNoUri",
 			buildOpts: func() *MongoOptions {
 				return NewMongoOptions().
-					SetUri("mongodb://localhost").
 					SetHost("localhost").
 					SetAuthSource("admin").
 					SetAuthMechanism("SCRAM-SHA-256").
@@ -100,10 +91,9 @@ func TestMongoOptionsValidation(t *testing.T) {
 			expectError: true,
 		},
 		{
-			name: "MissingPassword",
+			name: "MissingPasswordWhenNoUri",
 			buildOpts: func() *MongoOptions {
 				return NewMongoOptions().
-					SetUri("mongodb://localhost").
 					SetHost("localhost").
 					SetAuthSource("admin").
 					SetAuthMechanism("SCRAM-SHA-256").
@@ -115,10 +105,9 @@ func TestMongoOptionsValidation(t *testing.T) {
 			expectError: true,
 		},
 		{
-			name: "MissingAuthSource",
+			name: "MissingAuthSourceWhenNoUri",
 			buildOpts: func() *MongoOptions {
 				return NewMongoOptions().
-					SetUri("mongodb://localhost").
 					SetHost("localhost").
 					SetAuthMechanism("SCRAM-SHA-256").
 					SetReplicaSet("rs0").
@@ -130,10 +119,9 @@ func TestMongoOptionsValidation(t *testing.T) {
 			expectError: true,
 		},
 		{
-			name: "MissingAuthMechanism",
+			name: "MissingAuthMechanismWhenNoUri",
 			buildOpts: func() *MongoOptions {
 				return NewMongoOptions().
-					SetUri("mongodb://localhost").
 					SetHost("localhost").
 					SetAuthSource("admin").
 					SetReplicaSet("rs0").
@@ -145,10 +133,9 @@ func TestMongoOptionsValidation(t *testing.T) {
 			expectError: true,
 		},
 		{
-			name: "MissingReplicaSet",
+			name: "MissingReplicaSetWhenNoUri",
 			buildOpts: func() *MongoOptions {
 				return NewMongoOptions().
-					SetUri("mongodb://localhost").
 					SetHost("localhost").
 					SetAuthSource("admin").
 					SetAuthMechanism("SCRAM-SHA-256").
@@ -179,12 +166,6 @@ func TestMongoOptionsValidation(t *testing.T) {
 			buildOpts: func() *MongoOptions {
 				return NewMongoOptions().
 					SetUri("mongodb://localhost").
-					SetHost("localhost").
-					SetAuthSource("admin").
-					SetAuthMechanism("SCRAM-SHA-256").
-					SetReplicaSet("rs0").
-					SetUsername("user").
-					SetPassword("pass").
 					SetTimeout(-1).
 					Build()
 			},
@@ -195,12 +176,6 @@ func TestMongoOptionsValidation(t *testing.T) {
 			buildOpts: func() *MongoOptions {
 				return NewMongoOptions().
 					SetUri("mongodb://localhost").
-					SetHost("localhost").
-					SetAuthSource("admin").
-					SetAuthMechanism("SCRAM-SHA-256").
-					SetReplicaSet("rs0").
-					SetUsername("user").
-					SetPassword("pass").
 					SetTimeout(1).
 					Build()
 			},
@@ -285,4 +260,46 @@ func TestMongoOptionsBuilder(t *testing.T) {
 			t.Error("expected RetryWrites to be false by default")
 		}
 	})
+}
+
+func TestMongodbLiveIntegration(t *testing.T) {
+	mongodbUri := os.Getenv("MONGODB_URI")
+	if mongodbUri == "" {
+		t.Skip("Skipping live integration test: MONGODB_URI not set")
+	}
+
+	tests := []struct {
+		name        string
+		buildOpts   func() *MongoOptions
+		expectError bool
+	}{
+		{
+			name: "LiveIntegrationTest",
+			buildOpts: func() *MongoOptions {
+				return NewMongoOptions().
+					SetUri(mongodbUri).
+					SetTimeout(5000).
+					Build()
+			},
+			expectError: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			opts := tt.buildOpts()
+			db, err := New(opts)
+			if err != nil {
+				t.Fatalf("failed to create database instance: %v", err)
+			}
+
+			err = db.Client.Ping()
+			if tt.expectError && err == nil {
+				t.Errorf("expected ping error but got nil")
+			}
+			if !tt.expectError && err != nil {
+				t.Errorf("expected no ping error but got: %v", err)
+			}
+		})
+	}
 }

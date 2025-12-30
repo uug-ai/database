@@ -12,13 +12,13 @@ import (
 
 // MongoOptions holds the configuration for Mongo
 type MongoOptions struct {
-	Uri           string `validate:"required"`
-	Host          string `validate:"required"`
-	AuthSource    string `validate:"required"`
-	AuthMechanism string `validate:"required"`
-	ReplicaSet    string `validate:"required"`
-	Username      string `validate:"required"`
-	Password      string `validate:"required"`
+	Uri           string `validate:"required_without=Host"`
+	Host          string `validate:"required_without=Uri"`
+	AuthSource    string `validate:"required_without=Uri"`
+	AuthMechanism string `validate:"required_without=Uri"`
+	ReplicaSet    string `validate:"required_without=Uri"`
+	Username      string `validate:"required_without=Uri"`
+	Password      string `validate:"required_without=Uri"`
 	Timeout       int    `validate:"required,gte=0"`
 	RetryWrites   bool
 }

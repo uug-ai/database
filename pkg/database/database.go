@@ -8,8 +8,8 @@ type DatabaseInterface interface {
 
 // SMTP represents an SMTP client instance
 type Database struct {
-	options *MongoOptions
-	client  DatabaseInterface
+	Options *MongoOptions
+	Client  DatabaseInterface
 }
 
 func New(opts *MongoOptions, client ...DatabaseInterface) (*Database, error) {
@@ -29,7 +29,7 @@ func New(opts *MongoOptions, client ...DatabaseInterface) (*Database, error) {
 	}
 
 	return &Database{
-		options: opts,
-		client:  m,
+		Options: opts,
+		Client:  m,
 	}, err
 }
