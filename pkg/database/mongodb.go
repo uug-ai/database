@@ -3,7 +3,6 @@ package database
 import (
 	"context"
 	"fmt"
-	"os"
 	"time"
 
 	"go.mongodb.org/mongo-driver/mongo"
@@ -85,6 +84,8 @@ func (b *MongoOptionsBuilder) SetTimeout(timeout int) *MongoOptionsBuilder {
 }
 
 // SetRetryWrites sets the retry writes option
+// This option was added because of DocumentDB compatibility:
+// https://stackoverflow.com/questions/70260941/documentdb-mongodb-updateone-retryable-writes-are-not-supported
 func (b *MongoOptionsBuilder) SetRetryWrites(retryWrites bool) *MongoOptionsBuilder {
 	b.options.RetryWrites = retryWrites
 	return b
@@ -102,36 +103,31 @@ type MongoClient struct {
 }
 
 // NewMongoClient creates a new MongoClient with the provided MongoDB settings
-func NewMongoClient(options *MongoOptions) DatabaseInterface {
-
+func NewMongoClient(options *MongoOptions) (DatabaseInterface, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(options.Timeout)*time.Millisecond)
 	defer cancel()
-
-	// We can also apply the complete URI
-	// e.g. "mongodb+srv://<username>:<password>@kerberos-hub.shhng.mongodb.net/?retryWrites=true&w=majority&appName=kerberos-hub"
 	if options.Uri != "" {
-		serverAPI := moptions.ServerAPI(moptions.ServerAPIVersion1)
-		opts := moptions.Client().
-			ApplyURI(options.Uri).
-			SetServerAPIOptions(serverAPI).
-			SetRetryWrites(options.RetryWrites).
-			SetMonitor(otelmongo.NewMonitor(otelmongo.WithCommandAttributeDisabled(false)))
-
-		// Create a new client and connect to the server
-		client, err := mongo.Connect(ctx, opts)
-		if err != nil {
-			fmt.Printf("Error setting up mongodb connection: %+v\n", err)
-			os.Exit(1)
-		}
-
-		return &MongoClient{
-			Client: client,
-		}
-
+		return newMongoClientFromURI(ctx, options)
 	}
+	return newMongoClientFromComponents(ctx, options)
+}
 
-	// If we don't have a full URI, build it from components such as host, username, password, etc.
-	// This will give less flexibility than a full URI, but is provided for convenience.
+func newMongoClientFromURI(ctx context.Context, options *MongoOptions) (DatabaseInterface, error) {
+	serverAPI := moptions.ServerAPI(moptions.ServerAPIVersion1)
+	opts := moptions.Client().
+		ApplyURI(options.Uri).
+		SetServerAPIOptions(serverAPI).
+		SetRetryWrites(options.RetryWrites).
+		SetMonitor(otelmongo.NewMonitor(otelmongo.WithCommandAttributeDisabled(false)))
+
+	client, err := mongo.Connect(ctx, opts)
+	return &MongoClient{
+		Client:  client,
+		options: options,
+	}, err
+}
+
+func newMongoClientFromComponents(ctx context.Context, options *MongoOptions) (DatabaseInterface, error) {
 	uri := fmt.Sprintf("mongodb://%s:%s@%s", options.Username, options.Password, options.Host)
 	if options.ReplicaSet != "" {
 		uri = fmt.Sprintf("%s/?replicaSet=%s", uri, options.ReplicaSet)
@@ -148,15 +144,10 @@ func NewMongoClient(options *MongoOptions) DatabaseInterface {
 			Username:      options.Username,
 			Password:      options.Password,
 		}))
-
-	if err != nil {
-		fmt.Printf("Error setting up mongodb connection: %+v\n", err)
-		os.Exit(1)
-	}
-
 	return &MongoClient{
-		Client: client,
-	}
+		Client:  client,
+		options: options,
+	}, err
 }
 
 func (m *MongoClient) Ping() error {
