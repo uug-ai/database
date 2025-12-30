@@ -4,8 +4,11 @@ Universal MongoDB database driver for Go with built-in observability and functio
 
 [![Go Version](https://img.shields.io/badge/Go-1.24-blue.svg)](https://go.dev/)
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
+[![GoDoc](https://godoc.org/github.com/uug-ai/database?status.svg)](https://godoc.org/github.com/uug-ai/database)
 [![Go Report Card](https://goreportcard.com/badge/github.com/uug-ai/database)](https://goreportcard.com/report/github.com/uug-ai/database)
 [![codecov](https://codecov.io/gh/uug-ai/database/graph/badge.svg?token=SN8PxxBckM)](https://codecov.io/gh/uug-ai/database)
+[![Release](https://img.shields.io/github/release/uug-ai/database.svg)](https://github.com/uug-ai/database/releases/latest)
+
 
 A Go library for connecting to and managing MongoDB with a unified interface using the functional options builder pattern. Includes built-in OpenTelemetry instrumentation for comprehensive observability.
 
