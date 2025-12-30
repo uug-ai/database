@@ -6,14 +6,14 @@ type DatabaseInterface interface {
 	Ping() error
 }
 
-// SMTP represents an SMTP client instance
+// Database represents a database client instance
 type Database struct {
 	Options *MongoOptions
 	Client  DatabaseInterface
 }
 
 func New(opts *MongoOptions, client ...DatabaseInterface) (*Database, error) {
-	// Validate SMTP configuration
+	// Validate Database configuration
 	validate := validator.New()
 	err := validate.Struct(opts)
 	if err != nil {
