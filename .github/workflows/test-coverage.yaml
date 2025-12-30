@@ -21,6 +21,10 @@ jobs:
     runs-on: ubuntu-latest
     env:
       MONGODB_URI: ${{ secrets.MONGODB_URI }}
+      MONGODB_HOST: ${{ secrets.MONGODB_HOST }}
+      MONGODB_DATABASE_CREDENTIALS: ${{ secrets.MONGODB_DATABASE_CREDENTIALS }}
+      MONGODB_USERNAME: ${{ secrets.MONGODB_USERNAME }}
+      MONGODB_PASSWORD: ${{ secrets.MONGODB_PASSWORD }}
     steps:
       # Checks-out your repository under $GITHUB_WORKSPACE, so your job can access it
       - name: Checkout repository

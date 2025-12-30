@@ -17,6 +17,10 @@ jobs:
     runs-on: ${{ matrix.runner }}
     env:
       MONGODB_URI: ${{ secrets.MONGODB_URI }}
+      MONGODB_HOST: ${{ secrets.MONGODB_HOST }}
+      MONGODB_DATABASE_CREDENTIALS: ${{ secrets.MONGODB_DATABASE_CREDENTIALS }}
+      MONGODB_USERNAME: ${{ secrets.MONGODB_USERNAME }}
+      MONGODB_PASSWORD: ${{ secrets.MONGODB_PASSWORD }}
     permissions:
       contents: write
       packages: write
