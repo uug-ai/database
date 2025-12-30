@@ -278,7 +278,7 @@ func TestMongodbLiveIntegration(t *testing.T) {
 			buildOpts: func() *MongoOptions {
 				return NewMongoOptions().
 					SetUri(mongodbUri).
-					SetTimeout(5000).
+					SetTimeout(2000).
 					Build()
 			},
 			expectError: false,
