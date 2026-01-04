@@ -99,7 +99,7 @@ func (b *MongoOptionsBuilder) Build() *MongoOptions {
 // MongoClient wraps mongo.Client to implement DatabaseInterface
 type MongoClient struct {
 	Client  *mongo.Client
-	options *MongoOptions
+	Options *MongoOptions
 }
 
 // NewMongoClient creates a new MongoClient with the provided MongoDB settings
@@ -123,7 +123,7 @@ func newMongoClientFromURI(ctx context.Context, options *MongoOptions) (Database
 	client, err := mongo.Connect(ctx, opts)
 	return &MongoClient{
 		Client:  client,
-		options: options,
+		Options: options,
 	}, err
 }
 
@@ -164,13 +164,11 @@ func newMongoClientFromComponents(ctx context.Context, options *MongoOptions) (D
 	client, err := mongo.Connect(ctx, clientOpts)
 	return &MongoClient{
 		Client:  client,
-		options: options,
+		Options: options,
 	}, err
 }
 
-func (m *MongoClient) Ping() error {
-	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(m.options.Timeout)*time.Millisecond)
-	defer cancel()
+func (m *MongoClient) Ping(ctx context.Context) error {
 	err := m.Client.Ping(ctx, nil)
 	return err
 }

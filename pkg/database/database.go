@@ -1,9 +1,13 @@
 package database
 
-import "github.com/go-playground/validator/v10"
+import (
+	"context"
+
+	"github.com/go-playground/validator/v10"
+)
 
 type DatabaseInterface interface {
-	Ping() error
+	Ping(context.Context) error
 }
 
 // Database represents a database client instance
