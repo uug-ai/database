@@ -5,6 +5,9 @@ import (
 	"os"
 	"testing"
 	"time"
+
+	"github.com/uug-ai/models/pkg/models"
+	"go.mongodb.org/mongo-driver/bson"
 )
 
 // TestMongoOptionsValidation tests the validation of MongoDB options
@@ -279,5 +282,59 @@ func TestMongodbLiveIntegration(t *testing.T) {
 				t.Errorf("expected no ping error but got: %v", err)
 			}
 		})
+	}
+}
+
+func TestFindIntegration(t *testing.T) {
+	mongodbUri := os.Getenv("MONGODB_URI")
+	if mongodbUri == "" {
+		t.Skip("MONGODB_URI not set, skipping integration test")
+	}
+
+	opts := NewMongoOptions().
+		SetUri(mongodbUri).
+		SetTimeout(1000).
+		Build()
+
+	db, err := New(opts)
+	if err != nil {
+		t.Fatalf("failed to create database instance: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(db.Options.Timeout)*time.Millisecond)
+	defer cancel()
+
+	// Test Find with username filter
+	filter := map[string]interface{}{"username": "cedricve"}
+	results, err := db.Client.Find(ctx, "Kerberos", "users", filter)
+	if err != nil {
+		t.Fatalf("Find failed: %v", err)
+	}
+
+	// Validate results
+	resultSlice, ok := results.([]interface{})
+	if !ok {
+		t.Fatalf("expected results to be []interface{}, got %T", results)
+	}
+
+	if len(resultSlice) != 1 {
+		t.Fatalf("expected exactly 1 result for username 'cedricve', got %d", len(resultSlice))
+	}
+
+	// Marshal the result to User struct
+	resultBytes, err := bson.Marshal(resultSlice[0])
+	if err != nil {
+		t.Fatalf("failed to marshal result: %v", err)
+	}
+
+	var user models.User
+	err = bson.Unmarshal(resultBytes, &user)
+	if err != nil {
+		t.Fatalf("failed to unmarshal to User struct: %v", err)
+	}
+
+	// Validate user fields
+	if user.Username != "cedricve" {
+		t.Errorf("expected username 'cedricve', got '%s'", user.Username)
 	}
 }
