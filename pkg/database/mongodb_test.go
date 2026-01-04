@@ -238,7 +238,7 @@ func TestMongodbLiveIntegration(t *testing.T) {
 				mongodbUri := os.Getenv("MONGODB_URI")
 				return NewMongoOptions().
 					SetUri(mongodbUri).
-					SetTimeout(2000).
+					SetTimeout(5000).
 					Build()
 			},
 			expectError: false,
