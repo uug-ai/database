@@ -8,7 +8,7 @@ import (
 )
 
 // TestMongoOptionsValidation tests the validation of MongoDB options
-/*func TestMongoOptionsValidation(t *testing.T) {
+func TestMongoOptionsValidation(t *testing.T) {
 	tests := []struct {
 		name        string
 		buildOpts   func() *MongoOptions
@@ -149,10 +149,7 @@ import (
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			opts := tt.buildOpts()
-			mockClient := &MockDatabaseInterface{}
-
-			_, err := New(opts, mockClient)
-
+			_, err := New(opts)
 			if tt.expectError && err == nil {
 				t.Errorf("expected validation error but got nil")
 			}
@@ -161,7 +158,7 @@ import (
 			}
 		})
 	}
-}*/
+}
 
 // TestMongoOptionsBuilder tests the fluent builder pattern for MongoDB options
 func TestMongoOptionsBuilder(t *testing.T) {
