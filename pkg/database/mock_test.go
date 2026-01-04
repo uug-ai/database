@@ -3,6 +3,7 @@ package database
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 )
 
@@ -220,6 +221,157 @@ func TestMockDatabase(t *testing.T) {
 		// Verify the mock was called
 		if len(mock.PingCalls) != 1 {
 			t.Errorf("expected 1 ping call on mock, got %d", len(mock.PingCalls))
+		}
+	})
+}
+
+func TestMockDatabaseSequentialCalls(t *testing.T) {
+	t.Run("QueueMultipleFinds", func(t *testing.T) {
+		mock := NewMockDatabase()
+
+		// Queue multiple responses
+		users := []map[string]any{
+			{"id": 1, "name": "Alice"},
+			{"id": 2, "name": "Bob"},
+		}
+		notifications := []map[string]any{
+			{"id": 1, "message": "Hello"},
+			{"id": 2, "message": "World"},
+		}
+		settings := []map[string]any{
+			{"key": "theme", "value": "dark"},
+		}
+
+		mock.QueueFind(users, nil).
+			QueueFind(notifications, nil).
+			QueueFind(settings, nil)
+
+		// First call returns users
+		result1, err := mock.Find(context.Background(), "testdb", "users", map[string]any{})
+		if err != nil {
+			t.Errorf("unexpected error on first call: %v", err)
+		}
+		usersResult := result1.([]map[string]any)
+		if len(usersResult) != 2 || usersResult[0]["name"] != "Alice" {
+			t.Error("first call should return users")
+		}
+
+		// Second call returns notifications
+		result2, err := mock.Find(context.Background(), "testdb", "notifications", map[string]any{})
+		if err != nil {
+			t.Errorf("unexpected error on second call: %v", err)
+		}
+		notificationsResult := result2.([]map[string]any)
+		if len(notificationsResult) != 2 || notificationsResult[0]["message"] != "Hello" {
+			t.Error("second call should return notifications")
+		}
+
+		// Third call returns settings
+		result3, err := mock.Find(context.Background(), "testdb", "settings", map[string]any{})
+		if err != nil {
+			t.Errorf("unexpected error on third call: %v", err)
+		}
+		settingsResult := result3.([]map[string]any)
+		if len(settingsResult) != 1 || settingsResult[0]["key"] != "theme" {
+			t.Error("third call should return settings")
+		}
+
+		// Fourth call falls back to default behavior (empty slice)
+		result4, err := mock.Find(context.Background(), "testdb", "other", map[string]any{})
+		if err != nil {
+			t.Errorf("unexpected error on fourth call: %v", err)
+		}
+		if len(result4.([]any)) != 0 {
+			t.Error("fourth call should return empty slice (default)")
+		}
+
+		// Verify all calls were tracked
+		if len(mock.FindCalls) != 4 {
+			t.Errorf("expected 4 find calls, got %d", len(mock.FindCalls))
+		}
+	})
+
+	t.Run("QueueWithErrors", func(t *testing.T) {
+		mock := NewMockDatabase()
+
+		// Queue responses with errors
+		mock.QueueFind([]map[string]any{{"id": 1}}, nil).
+			QueueFind(nil, fmt.Errorf("connection timeout")).
+			QueueFind([]map[string]any{{"id": 2}}, nil)
+
+		// First call succeeds
+		result1, err := mock.Find(context.Background(), "testdb", "users", map[string]any{})
+		if err != nil {
+			t.Errorf("expected no error, got %v", err)
+		}
+		if len(result1.([]map[string]any)) != 1 {
+			t.Error("first call should return 1 result")
+		}
+
+		// Second call returns error
+		_, err = mock.Find(context.Background(), "testdb", "users", map[string]any{})
+		if err == nil || err.Error() != "connection timeout" {
+			t.Errorf("expected 'connection timeout' error, got %v", err)
+		}
+
+		// Third call succeeds again
+		result3, err := mock.Find(context.Background(), "testdb", "users", map[string]any{})
+		if err != nil {
+			t.Errorf("expected no error, got %v", err)
+		}
+		if len(result3.([]map[string]any)) != 1 {
+			t.Error("third call should return 1 result")
+		}
+	})
+
+	t.Run("QueueFindOne", func(t *testing.T) {
+		mock := NewMockDatabase()
+
+		// Queue multiple FindOne responses
+		mock.QueueFindOne(map[string]any{"id": 1, "name": "Alice"}, nil).
+			QueueFindOne(map[string]any{"id": 2, "name": "Bob"}, nil).
+			QueueFindOne(nil, fmt.Errorf("not found"))
+
+		// First call
+		result1, err := mock.FindOne(context.Background(), "testdb", "users", map[string]any{"id": 1})
+		if err != nil {
+			t.Errorf("unexpected error: %v", err)
+		}
+		if result1.(map[string]any)["name"] != "Alice" {
+			t.Error("first call should return Alice")
+		}
+
+		// Second call
+		result2, err := mock.FindOne(context.Background(), "testdb", "users", map[string]any{"id": 2})
+		if err != nil {
+			t.Errorf("unexpected error: %v", err)
+		}
+		if result2.(map[string]any)["name"] != "Bob" {
+			t.Error("second call should return Bob")
+		}
+
+		// Third call returns error
+		_, err = mock.FindOne(context.Background(), "testdb", "users", map[string]any{"id": 3})
+		if err == nil || err.Error() != "not found" {
+			t.Errorf("expected 'not found' error, got %v", err)
+		}
+	})
+
+	t.Run("ResetClearsQueue", func(t *testing.T) {
+		mock := NewMockDatabase()
+
+		// Queue responses
+		mock.QueueFind([]map[string]any{{"id": 1}}, nil).
+			QueueFindOne(map[string]any{"id": 1}, nil)
+
+		// Reset should clear queues
+		mock.Reset()
+
+		if len(mock.FindQueue) != 0 {
+			t.Error("FindQueue should be empty after Reset")
+		}
+		if len(mock.FindOneQueue) != 0 {
+			t.Error("FindOneQueue should be empty after Reset")
 		}
 	})
 }
