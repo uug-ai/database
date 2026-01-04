@@ -272,6 +272,8 @@ if err != nil {
 
 ## Testing
 
+### Running Tests
+
 Run the test suite:
 
 ```bash
@@ -292,7 +294,140 @@ go test ./pkg/database -v
 
 # MongoDB tests
 go test ./pkg/database -run TestMongo
+
+# Mock tests
+go test ./pkg/database -run TestMockDatabase
 ```
+
+### Mocking for Tests
+
+The package includes a complete mock implementation of the `DatabaseInterface` that allows you to control the behavior of database operations in your tests without needing a real database connection.
+
+#### Basic Mock Usage
+
+```go
+import (
+    "context"
+    "testing"
+    "github.com/uug-ai/database/pkg/database"
+)
+
+func TestMyFunction(t *testing.T) {
+    // Create a new mock database
+    mock := database.NewMockDatabase()
+    
+    // Set up expectations for what the mock should return
+    expectedUser := map[string]any{
+        "id":   1,
+        "name": "Alice",
+        "email": "alice@example.com",
+    }
+    mock.ExpectFindOne(expectedUser, nil)
+    
+    // Inject the mock into your Database instance
+    opts := database.NewMongoOptions().
+        SetUri("mongodb://localhost").
+        SetTimeout(5000).
+        Build()
+    
+    db, err := database.New(opts, mock)
+    if err != nil {
+        t.Fatalf("failed to create database: %v", err)
+    }
+    
+    // Use the database - it will use your mock
+    result, err := db.Client.FindOne(context.Background(), "testdb", "users", map[string]any{"id": 1})
+    if err != nil {
+        t.Errorf("unexpected error: %v", err)
+    }
+    
+    // Verify the call was tracked
+    if len(mock.FindOneCalls) != 1 {
+        t.Errorf("expected 1 FindOne call, got %d", len(mock.FindOneCalls))
+    }
+}
+```
+
+#### Advanced Mock Features
+
+**Expect Multiple Results:**
+```go
+mock := database.NewMockDatabase()
+
+// Mock Find to return multiple documents
+users := []map[string]any{
+    {"id": 1, "name": "Alice"},
+    {"id": 2, "name": "Bob"},
+}
+mock.ExpectFind(users, nil)
+
+result, err := mock.Find(ctx, "testdb", "users", map[string]any{})
+// result contains the mocked users
+```
+
+**Expect Errors:**
+```go
+mock := database.NewMockDatabase()
+
+// Mock a connection error
+mock.ExpectPing(errors.New("connection failed"))
+
+err := mock.Ping(ctx)
+// err will be "connection failed"
+```
+
+**Custom Behavior:**
+```go
+mock := database.NewMockDatabase()
+
+// Define custom logic based on input
+mock.FindFunc = func(ctx context.Context, db string, collection string, filter any, opts ...any) (any, error) {
+    filterMap := filter.(map[string]any)
+    
+    if filterMap["status"] == "active" {
+        return []map[string]any{{"id": 1, "status": "active"}}, nil
+    }
+    
+    return []map[string]any{}, nil
+}
+```
+
+**Track Call History:**
+```go
+mock := database.NewMockDatabase()
+
+// Make some calls
+mock.Find(ctx, "testdb", "users", map[string]any{})
+mock.FindOne(ctx, "testdb", "users", map[string]any{"id": 1})
+
+// Verify the calls
+if len(mock.FindCalls) != 1 {
+    t.Error("expected 1 Find call")
+}
+
+if mock.FindCalls[0].Collection != "users" {
+    t.Error("expected collection to be 'users'")
+}
+
+// Reset call history for the next test
+mock.Reset()
+```
+
+#### Mock API
+
+The `MockDatabase` type provides:
+
+- **`NewMockDatabase()`**: Creates a new mock with sensible defaults
+- **`ExpectPing(err error)`**: Set expected Ping behavior
+- **`ExpectFind(result any, err error)`**: Set expected Find behavior
+- **`ExpectFindOne(result any, err error)`**: Set expected FindOne behavior
+- **`PingFunc`**: Custom function for Ping behavior
+- **`FindFunc`**: Custom function for Find behavior
+- **`FindOneFunc`**: Custom function for FindOne behavior
+- **`PingCalls`**: Slice of all Ping calls made
+- **`FindCalls`**: Slice of all Find calls made
+- **`FindOneCalls`**: Slice of all FindOne calls made
+- **`Reset()`**: Clear all call history
 
 ## OpenTelemetry Integration
 
