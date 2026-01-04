@@ -172,3 +172,50 @@ func (m *MongoClient) Ping(ctx context.Context) error {
 	err := m.Client.Ping(ctx, nil)
 	return err
 }
+
+// Find executes a find query on the specified database and collection
+func (m *MongoClient) Find(ctx context.Context, db string, collection string, filter any, opts ...any) (any, error) {
+	coll := m.Client.Database(db).Collection(collection)
+
+	// Convert opts to mongo.FindOptions if provided
+	var findOpts []*moptions.FindOptions
+	for _, opt := range opts {
+		if fo, ok := opt.(*moptions.FindOptions); ok {
+			findOpts = append(findOpts, fo)
+		}
+	}
+
+	cursor, err := coll.Find(ctx, filter, findOpts...)
+	if err != nil {
+		return nil, err
+	}
+	defer cursor.Close(ctx)
+
+	var results []any
+	if err = cursor.All(ctx, &results); err != nil {
+		return nil, err
+	}
+
+	return results, nil
+}
+
+// FindOne executes a findOne query on the specified database and collection
+func (m *MongoClient) FindOne(ctx context.Context, db string, collection string, filter any, opts ...any) (any, error) {
+	coll := m.Client.Database(db).Collection(collection)
+
+	// Convert opts to mongo.FindOneOptions if provided
+	var findOneOpts []*moptions.FindOneOptions
+	for _, opt := range opts {
+		if fo, ok := opt.(*moptions.FindOneOptions); ok {
+			findOneOpts = append(findOneOpts, fo)
+		}
+	}
+
+	var result any
+	err := coll.FindOne(ctx, filter, findOneOpts...).Decode(&result)
+	if err != nil {
+		return nil, err
+	}
+
+	return result, nil
+}

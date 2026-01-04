@@ -8,6 +8,8 @@ import (
 
 type DatabaseInterface interface {
 	Ping(context.Context) error
+	Find(ctx context.Context, db string, collection string, filter any, opts ...any) (any, error)
+	FindOne(ctx context.Context, db string, collection string, filter any, opts ...any) (any, error)
 }
 
 // Database represents a database client instance
