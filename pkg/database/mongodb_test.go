@@ -293,7 +293,7 @@ func TestFindIntegration(t *testing.T) {
 
 	opts := NewMongoOptions().
 		SetUri(mongodbUri).
-		SetTimeout(1000).
+		SetTimeout(5000).
 		Build()
 
 	db, err := New(opts)
