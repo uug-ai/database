@@ -1,20 +1,14 @@
 package database
 
 import (
+	"context"
 	"os"
 	"testing"
+	"time"
+
+	"github.com/uug-ai/models/pkg/models"
+	"go.mongodb.org/mongo-driver/bson"
 )
-
-// MockDatabaseInterface is a mock implementation of DatabaseInterface for testing
-type MockDatabaseInterface struct {
-	PingCalled bool
-	PingError  error
-}
-
-func (m *MockDatabaseInterface) Ping() error {
-	m.PingCalled = true
-	return m.PingError
-}
 
 // TestMongoOptionsValidation tests the validation of MongoDB options
 func TestMongoOptionsValidation(t *testing.T) {
@@ -158,10 +152,7 @@ func TestMongoOptionsValidation(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			opts := tt.buildOpts()
-			mockClient := &MockDatabaseInterface{}
-
-			_, err := New(opts, mockClient)
-
+			_, err := New(opts)
 			if tt.expectError && err == nil {
 				t.Errorf("expected validation error but got nil")
 			}
@@ -247,7 +238,7 @@ func TestMongodbLiveIntegration(t *testing.T) {
 				mongodbUri := os.Getenv("MONGODB_URI")
 				return NewMongoOptions().
 					SetUri(mongodbUri).
-					SetTimeout(2000).
+					SetTimeout(5000).
 					Build()
 			},
 			expectError: false,
@@ -280,7 +271,10 @@ func TestMongodbLiveIntegration(t *testing.T) {
 				t.Fatalf("failed to create database instance: %v", err)
 			}
 
-			err = db.Client.Ping()
+			ctx, cancel := context.WithTimeout(context.Background(), time.Duration(db.Options.Timeout)*time.Millisecond)
+			defer cancel()
+
+			err = db.Client.Ping(ctx)
 			if tt.expectError && err == nil {
 				t.Errorf("expected ping error but got nil")
 			}
@@ -288,5 +282,59 @@ func TestMongodbLiveIntegration(t *testing.T) {
 				t.Errorf("expected no ping error but got: %v", err)
 			}
 		})
+	}
+}
+
+func TestFindIntegration(t *testing.T) {
+	mongodbUri := os.Getenv("MONGODB_URI")
+	if mongodbUri == "" {
+		t.Skip("MONGODB_URI not set, skipping integration test")
+	}
+
+	opts := NewMongoOptions().
+		SetUri(mongodbUri).
+		SetTimeout(5000).
+		Build()
+
+	db, err := New(opts)
+	if err != nil {
+		t.Fatalf("failed to create database instance: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(db.Options.Timeout)*time.Millisecond)
+	defer cancel()
+
+	// Test Find with username filter
+	filter := map[string]any{"username": "cedricve"}
+	results, err := db.Client.Find(ctx, "Kerberos", "users", filter)
+	if err != nil {
+		t.Fatalf("Find failed: %v", err)
+	}
+
+	// Validate results
+	resultSlice, ok := results.([]any)
+	if !ok {
+		t.Fatalf("expected results to be []any, got %T", results)
+	}
+
+	if len(resultSlice) != 1 {
+		t.Fatalf("expected exactly 1 result for username 'cedricve', got %d", len(resultSlice))
+	}
+
+	// Marshal the result to User struct
+	resultBytes, err := bson.Marshal(resultSlice[0])
+	if err != nil {
+		t.Fatalf("failed to marshal result: %v", err)
+	}
+
+	var user models.User
+	err = bson.Unmarshal(resultBytes, &user)
+	if err != nil {
+		t.Fatalf("failed to unmarshal to User struct: %v", err)
+	}
+
+	// Validate user fields
+	if user.Username != "cedricve" {
+		t.Errorf("expected username 'cedricve', got '%s'", user.Username)
 	}
 }

@@ -4,6 +4,7 @@ go 1.24.10
 
 require (
 	github.com/go-playground/validator/v10 v10.30.1
+	github.com/uug-ai/models v1.2.26
 	go.mongodb.org/mongo-driver v1.17.6
 	go.opentelemetry.io/contrib/instrumentation/go.mongodb.org/mongo-driver/mongo/otelmongo v0.64.0
 )
