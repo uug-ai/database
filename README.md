@@ -392,6 +392,59 @@ mock.FindFunc = func(ctx context.Context, db string, collection string, filter a
 }
 ```
 
+**Sequential Responses (Queue Pattern):**
+```go
+mock := database.NewMockDatabase()
+
+// Queue multiple responses for sequential calls
+// Each call consumes the next item in the queue (FIFO)
+users := []map[string]any{{"id": 1, "name": "Alice"}}
+notifications := []map[string]any{{"id": 1, "message": "Hello"}}
+settings := []map[string]any{{"key": "theme", "value": "dark"}}
+
+mock.QueueFind(users, nil).
+    QueueFind(notifications, nil).
+    QueueFind(settings, nil)
+
+// First call returns users
+result1, _ := mock.Find(ctx, "testdb", "users", map[string]any{})
+// result1 contains users
+
+// Second call returns notifications
+result2, _ := mock.Find(ctx, "testdb", "notifications", map[string]any{})
+// result2 contains notifications
+
+// Third call returns settings
+result3, _ := mock.Find(ctx, "testdb", "settings", map[string]any{})
+// result3 contains settings
+
+// Fourth call falls back to default behavior (empty slice)
+result4, _ := mock.Find(ctx, "testdb", "other", map[string]any{})
+// result4 is []any{}
+```
+
+**Queue with Errors:**
+```go
+mock := database.NewMockDatabase()
+
+// Queue responses including errors
+mock.QueueFind([]map[string]any{{"id": 1}}, nil).
+    QueueFind(nil, errors.New("connection timeout")).
+    QueueFind([]map[string]any{{"id": 2}}, nil)
+
+// First call succeeds
+result1, err := mock.Find(ctx, "testdb", "users", map[string]any{})
+// err is nil, result1 has data
+
+// Second call returns error
+result2, err := mock.Find(ctx, "testdb", "users", map[string]any{})
+// err is "connection timeout"
+
+// Third call succeeds again
+result3, err := mock.Find(ctx, "testdb", "users", map[string]any{})
+// err is nil, result3 has data
+```
+
 **Track Call History:**
 ```go
 mock := database.NewMockDatabase()
@@ -417,17 +470,34 @@ mock.Reset()
 
 The `MockDatabase` type provides:
 
+**Setup Methods:**
 - **`NewMockDatabase()`**: Creates a new mock with sensible defaults
-- **`ExpectPing(err error)`**: Set expected Ping behavior
-- **`ExpectFind(result any, err error)`**: Set expected Find behavior
-- **`ExpectFindOne(result any, err error)`**: Set expected FindOne behavior
+- **`ExpectPing(err error)`**: Set expected Ping behavior (for all calls)
+- **`ExpectFind(result any, err error)`**: Set expected Find behavior (for all calls)
+- **`ExpectFindOne(result any, err error)`**: Set expected FindOne behavior (for all calls)
+
+**Sequential Queue Methods:**
+- **`QueuePing(err error)`**: Add a Ping response to the queue for sequential calls
+- **`QueueFind(result any, err error)`**: Add a Find response to the queue for sequential calls
+- **`QueueFindOne(result any, err error)`**: Add a FindOne response to the queue for sequential calls
+
+**Custom Function Handlers:**
 - **`PingFunc`**: Custom function for Ping behavior
 - **`FindFunc`**: Custom function for Find behavior
 - **`FindOneFunc`**: Custom function for FindOne behavior
+
+**Call Tracking:**
 - **`PingCalls`**: Slice of all Ping calls made
 - **`FindCalls`**: Slice of all Find calls made
 - **`FindOneCalls`**: Slice of all FindOne calls made
-- **`Reset()`**: Clear all call history
+
+**Utility Methods:**
+- **`Reset()`**: Clear all call history and queues
+
+**Execution Priority:**
+1. Queued responses (consumed FIFO) - highest priority
+2. Custom function handlers (Func properties)
+3. Default behavior - fallback
 
 ## OpenTelemetry Integration
 
