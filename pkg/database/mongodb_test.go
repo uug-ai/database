@@ -271,7 +271,9 @@ func TestMongodbLiveIntegration(t *testing.T) {
 				t.Fatalf("failed to create database instance: %v", err)
 			}
 
-			ctx, cancel := context.WithTimeout(context.Background(), time.Duration(db.Options.Timeout)*time.Millisecond)
+			options := db.Options.(*MongoOptions)
+
+			ctx, cancel := context.WithTimeout(context.Background(), time.Duration(options.Timeout)*time.Millisecond)
 			defer cancel()
 
 			err = db.Client.Ping(ctx)
@@ -301,7 +303,9 @@ func TestFindIntegration(t *testing.T) {
 		t.Fatalf("failed to create database instance: %v", err)
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(db.Options.Timeout)*time.Millisecond)
+	options := db.Options.(*MongoOptions)
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(options.Timeout)*time.Millisecond)
 	defer cancel()
 
 	// Test Find with username filter
