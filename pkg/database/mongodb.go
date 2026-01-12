@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/go-playground/validator/v10"
 	"go.mongodb.org/mongo-driver/mongo"
 	moptions "go.mongodb.org/mongo-driver/mongo/options"
 	"go.opentelemetry.io/contrib/instrumentation/go.mongodb.org/mongo-driver/mongo/otelmongo"
@@ -21,6 +22,12 @@ type MongoOptions struct {
 	AuthMechanism string
 	ReplicaSet    string
 	RetryWrites   bool
+}
+
+// Validate validates the MongoOptions configuration
+func (m *MongoOptions) Validate() error {
+	validate := validator.New()
+	return validate.Struct(m)
 }
 
 // MongoOptionsBuilder provides a fluent interface for building Mongo options
@@ -173,6 +180,11 @@ func (m *MongoClient) Ping(ctx context.Context) error {
 	return err
 }
 
+// Disconnect disconnects the MongoDB client
+func (m *MongoClient) Disconnect(ctx context.Context) error {
+	return m.Client.Disconnect(ctx)
+}
+
 // Find executes a find query on the specified database and collection
 func (m *MongoClient) Find(ctx context.Context, db string, collection string, filter any, opts ...any) (any, error) {
 	coll := m.Client.Database(db).Collection(collection)
@@ -218,4 +230,28 @@ func (m *MongoClient) FindOne(ctx context.Context, db string, collection string,
 	}
 
 	return result, nil
+}
+
+// InsertOne inserts a single document into the specified database and collection
+func (m *MongoClient) InsertOne(ctx context.Context, db string, collection string, document any, opts ...any) (any, error) {
+	coll := m.Client.Database(db).Collection(collection)
+
+	result, err := coll.InsertOne(ctx, document)
+	if err != nil {
+		return nil, err
+	}
+
+	return result.InsertedID, nil
+}
+
+// InsertMany inserts multiple documents into the specified database and collection
+func (m *MongoClient) InsertMany(ctx context.Context, db string, collection string, documents []any, opts ...any) (any, error) {
+	coll := m.Client.Database(db).Collection(collection)
+
+	result, err := coll.InsertMany(ctx, documents)
+	if err != nil {
+		return nil, err
+	}
+
+	return result.InsertedIDs, nil
 }

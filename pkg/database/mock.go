@@ -106,6 +106,11 @@ func (m *MockDatabase) Ping(ctx context.Context) error {
 	return nil
 }
 
+// Disconnect implements DatabaseInterface
+func (m *MockDatabase) Disconnect(ctx context.Context) error {
+	return nil
+}
+
 // Find implements DatabaseInterface
 func (m *MockDatabase) Find(ctx context.Context, db string, collection string, filter any, opts ...any) (any, error) {
 	m.FindCalls = append(m.FindCalls, FindCall{
@@ -152,6 +157,16 @@ func (m *MockDatabase) FindOne(ctx context.Context, db string, collection string
 		return m.FindOneFunc(ctx, db, collection, filter, opts...)
 	}
 	return nil, fmt.Errorf("no document found")
+}
+
+// InsertOne implements DatabaseInterface
+func (m *MockDatabase) InsertOne(ctx context.Context, db string, collection string, document any, opts ...any) (any, error) {
+	return nil, fmt.Errorf("InsertOne not implemented in MockDatabase")
+}
+
+// InsertMany implements DatabaseInterface
+func (m *MockDatabase) InsertMany(ctx context.Context, db string, collection string, documents []any, opts ...any) (any, error) {
+	return nil, fmt.Errorf("InsertMany not implemented in MockDatabase")
 }
 
 // Reset clears all recorded calls
