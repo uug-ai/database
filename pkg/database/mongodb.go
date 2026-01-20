@@ -175,6 +175,7 @@ func newMongoClientFromComponents(ctx context.Context, options *MongoOptions) (D
 	}, err
 }
 
+// Ping pings the MongoDB server to check connectivity
 func (m *MongoClient) Ping(ctx context.Context) error {
 	err := m.Client.Ping(ctx, nil)
 	return err
@@ -183,6 +184,11 @@ func (m *MongoClient) Ping(ctx context.Context) error {
 // Disconnect disconnects the MongoDB client
 func (m *MongoClient) Disconnect(ctx context.Context) error {
 	return m.Client.Disconnect(ctx)
+}
+
+// GetTimeout returns the timeout duration for the MongoDB client
+func (m *MongoClient) GetTimeout() time.Duration {
+	return time.Duration(m.Options.Timeout) * time.Millisecond
 }
 
 // Find executes a find query on the specified database and collection
