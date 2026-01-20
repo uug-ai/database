@@ -3,11 +3,13 @@ package database
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/go-playground/validator/v10"
 )
 
 type DatabaseInterface interface {
+	GetTimeout() time.Duration
 	Ping(context.Context) error
 	Find(ctx context.Context, db string, collection string, filter any, opts ...any) (any, error)
 	FindOne(ctx context.Context, db string, collection string, filter any, opts ...any) (any, error)
