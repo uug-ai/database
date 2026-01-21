@@ -3,6 +3,7 @@ package database
 import (
 	"context"
 	"fmt"
+	"time"
 )
 
 // MockDatabase is a mock implementation of DatabaseInterface for testing
@@ -112,8 +113,8 @@ func (m *MockDatabase) Disconnect(ctx context.Context) error {
 }
 
 // GetTimeout returns the timeout duration
-func (m *MockDatabase) GetTimeout() int {
-	return 0
+func (m *MockDatabase) GetTimeout() time.Duration {
+	return 5 * time.Second
 }
 
 // Find implements DatabaseInterface
