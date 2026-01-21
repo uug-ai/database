@@ -111,6 +111,11 @@ func (m *MockDatabase) Disconnect(ctx context.Context) error {
 	return nil
 }
 
+// GetTimeout returns the timeout duration
+func (m *MockDatabase) GetTimeout() int {
+	return 0
+}
+
 // Find implements DatabaseInterface
 func (m *MockDatabase) Find(ctx context.Context, db string, collection string, filter any, opts ...any) (any, error) {
 	m.FindCalls = append(m.FindCalls, FindCall{
