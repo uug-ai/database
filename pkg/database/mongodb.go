@@ -238,6 +238,22 @@ func (m *MongoClient) FindOne(ctx context.Context, db string, collection string,
 	return result, nil
 }
 
+// FindOneInto executes a findOne query and decodes the result directly into the provided destination.
+// The dest parameter must be a pointer to the struct you want to decode into.
+func (m *MongoClient) FindOneInto(ctx context.Context, db string, collection string, filter any, dest any, opts ...any) error {
+	coll := m.Client.Database(db).Collection(collection)
+
+	// Convert opts to mongo.FindOneOptions if provided
+	var findOneOpts []*moptions.FindOneOptions
+	for _, opt := range opts {
+		if fo, ok := opt.(*moptions.FindOneOptions); ok {
+			findOneOpts = append(findOneOpts, fo)
+		}
+	}
+
+	return coll.FindOne(ctx, filter, findOneOpts...).Decode(dest)
+}
+
 // InsertOne inserts a single document into the specified database and collection
 func (m *MongoClient) InsertOne(ctx context.Context, db string, collection string, document any, opts ...any) (any, error) {
 	coll := m.Client.Database(db).Collection(collection)

@@ -13,6 +13,7 @@ type DatabaseInterface interface {
 	Ping(context.Context) error
 	Find(ctx context.Context, db string, collection string, filter any, opts ...any) (any, error)
 	FindOne(ctx context.Context, db string, collection string, filter any, opts ...any) (any, error)
+	FindOneInto(ctx context.Context, db string, collection string, filter any, dest any, opts ...any) error
 	Disconnect(ctx context.Context) error
 	InsertOne(ctx context.Context, db string, collection string, document any, opts ...any) (any, error)
 	InsertMany(ctx context.Context, db string, collection string, documents []any, opts ...any) (any, error)

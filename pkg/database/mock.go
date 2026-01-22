@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"time"
+
+	"go.mongodb.org/mongo-driver/bson"
 )
 
 // MockDatabase is a mock implementation of DatabaseInterface for testing
@@ -17,15 +19,20 @@ type MockDatabase struct {
 	// FindOneFunc allows customizing FindOne behavior
 	FindOneFunc func(ctx context.Context, db string, collection string, filter any, opts ...any) (any, error)
 
+	// FindOneIntoFunc allows customizing FindOneInto behavior
+	FindOneIntoFunc func(ctx context.Context, db string, collection string, filter any, dest any, opts ...any) error
+
 	// Sequential response queues for multiple calls
-	PingQueue    []PingResponse
-	FindQueue    []FindResponse
-	FindOneQueue []FindOneResponse
+	PingQueue        []PingResponse
+	FindQueue        []FindResponse
+	FindOneQueue     []FindOneResponse
+	FindOneIntoQueue []FindOneIntoResponse
 
 	// Call tracking
-	PingCalls    []PingCall
-	FindCalls    []FindCall
-	FindOneCalls []FindOneCall
+	PingCalls        []PingCall
+	FindCalls        []FindCall
+	FindOneCalls     []FindOneCall
+	FindOneIntoCalls []FindOneIntoCall
 }
 
 // PingResponse represents a queued response for Ping
@@ -42,6 +49,12 @@ type FindResponse struct {
 // FindOneResponse represents a queued response for FindOne
 type FindOneResponse struct {
 	Result any
+	Err    error
+}
+
+// FindOneIntoResponse represents a queued response for FindOneInto
+type FindOneIntoResponse struct {
+	Result any // Will be copied into dest
 	Err    error
 }
 
@@ -68,6 +81,16 @@ type FindOneCall struct {
 	Opts       []any
 }
 
+// FindOneIntoCall records a call to FindOneInto
+type FindOneIntoCall struct {
+	Ctx        context.Context
+	Db         string
+	Collection string
+	Filter     any
+	Dest       any
+	Opts       []any
+}
+
 // NewMockDatabase creates a new MockDatabase with sensible defaults
 func NewMockDatabase() *MockDatabase {
 	return &MockDatabase{
@@ -80,12 +103,17 @@ func NewMockDatabase() *MockDatabase {
 		FindOneFunc: func(ctx context.Context, db string, collection string, filter any, opts ...any) (any, error) {
 			return nil, fmt.Errorf("no document found")
 		},
-		PingCalls:    []PingCall{},
-		FindCalls:    []FindCall{},
-		FindOneCalls: []FindOneCall{},
-		PingQueue:    []PingResponse{},
-		FindQueue:    []FindResponse{},
-		FindOneQueue: []FindOneResponse{},
+		FindOneIntoFunc: func(ctx context.Context, db string, collection string, filter any, dest any, opts ...any) error {
+			return fmt.Errorf("no document found")
+		},
+		PingCalls:        []PingCall{},
+		FindCalls:        []FindCall{},
+		FindOneCalls:     []FindOneCall{},
+		FindOneIntoCalls: []FindOneIntoCall{},
+		PingQueue:        []PingResponse{},
+		FindQueue:        []FindResponse{},
+		FindOneQueue:     []FindOneResponse{},
+		FindOneIntoQueue: []FindOneIntoResponse{},
 	}
 }
 
@@ -165,6 +193,43 @@ func (m *MockDatabase) FindOne(ctx context.Context, db string, collection string
 	return nil, fmt.Errorf("no document found")
 }
 
+// FindOneInto implements DatabaseInterface
+func (m *MockDatabase) FindOneInto(ctx context.Context, db string, collection string, filter any, dest any, opts ...any) error {
+	m.FindOneIntoCalls = append(m.FindOneIntoCalls, FindOneIntoCall{
+		Ctx:        ctx,
+		Db:         db,
+		Collection: collection,
+		Filter:     filter,
+		Dest:       dest,
+		Opts:       opts,
+	})
+
+	// Check if there's a queued response
+	if len(m.FindOneIntoQueue) > 0 {
+		response := m.FindOneIntoQueue[0]
+		m.FindOneIntoQueue = m.FindOneIntoQueue[1:]
+		if response.Result != nil {
+			return copyResult(response.Result, dest)
+		}
+		return response.Err
+	}
+
+	// Fall back to FindOneIntoFunc
+	if m.FindOneIntoFunc != nil {
+		return m.FindOneIntoFunc(ctx, db, collection, filter, dest, opts...)
+	}
+	return fmt.Errorf("no document found")
+}
+
+// copyResult copies src into dest using BSON marshaling (for mock testing)
+func copyResult(src any, dest any) error {
+	bytes, err := bson.Marshal(src)
+	if err != nil {
+		return err
+	}
+	return bson.Unmarshal(bytes, dest)
+}
+
 // InsertOne implements DatabaseInterface
 func (m *MockDatabase) InsertOne(ctx context.Context, db string, collection string, document any, opts ...any) (any, error) {
 	return nil, fmt.Errorf("InsertOne not implemented in MockDatabase")
@@ -180,9 +245,11 @@ func (m *MockDatabase) Reset() {
 	m.PingCalls = []PingCall{}
 	m.FindCalls = []FindCall{}
 	m.FindOneCalls = []FindOneCall{}
+	m.FindOneIntoCalls = []FindOneIntoCall{}
 	m.PingQueue = []PingResponse{}
 	m.FindQueue = []FindResponse{}
 	m.FindOneQueue = []FindOneResponse{}
+	m.FindOneIntoQueue = []FindOneIntoResponse{}
 }
 
 // ExpectPing sets up an expectation for Ping
@@ -209,6 +276,17 @@ func (m *MockDatabase) ExpectFindOne(result any, err error) *MockDatabase {
 	return m
 }
 
+// ExpectFindOneInto sets up an expectation for FindOneInto
+func (m *MockDatabase) ExpectFindOneInto(result any, err error) *MockDatabase {
+	m.FindOneIntoFunc = func(ctx context.Context, db string, collection string, filter any, dest any, opts ...any) error {
+		if result != nil {
+			copyResult(result, dest)
+		}
+		return err
+	}
+	return m
+}
+
 // QueuePing adds a Ping response to the queue for sequential calls
 func (m *MockDatabase) QueuePing(err error) *MockDatabase {
 	m.PingQueue = append(m.PingQueue, PingResponse{Err: err})
@@ -224,5 +302,11 @@ func (m *MockDatabase) QueueFind(result any, err error) *MockDatabase {
 // QueueFindOne adds a FindOne response to the queue for sequential calls
 func (m *MockDatabase) QueueFindOne(result any, err error) *MockDatabase {
 	m.FindOneQueue = append(m.FindOneQueue, FindOneResponse{Result: result, Err: err})
+	return m
+}
+
+// QueueFindOneInto adds a FindOneInto response to the queue for sequential calls
+func (m *MockDatabase) QueueFindOneInto(result any, err error) *MockDatabase {
+	m.FindOneIntoQueue = append(m.FindOneIntoQueue, FindOneIntoResponse{Result: result, Err: err})
 	return m
 }
