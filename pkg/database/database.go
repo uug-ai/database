@@ -8,12 +8,18 @@ import (
 	"github.com/go-playground/validator/v10"
 )
 
+// SingleResultInterface defines the interface for single query results
+type SingleResultInterface interface {
+	Into(dest any) error
+	Raw() (any, error)
+	Err() error
+}
+
 type DatabaseInterface interface {
 	GetTimeout() time.Duration
 	Ping(context.Context) error
 	Find(ctx context.Context, db string, collection string, filter any, opts ...any) (any, error)
-	FindOne(ctx context.Context, db string, collection string, filter any, opts ...any) (any, error)
-	FindOneInto(ctx context.Context, db string, collection string, filter any, dest any, opts ...any) error
+	FindOne(ctx context.Context, db string, collection string, filter any, opts ...any) SingleResultInterface
 	Disconnect(ctx context.Context) error
 	InsertOne(ctx context.Context, db string, collection string, document any, opts ...any) (any, error)
 	InsertMany(ctx context.Context, db string, collection string, documents []any, opts ...any) (any, error)

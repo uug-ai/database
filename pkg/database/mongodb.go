@@ -217,8 +217,9 @@ func (m *MongoClient) Find(ctx context.Context, db string, collection string, fi
 	return results, nil
 }
 
-// FindOne executes a findOne query on the specified database and collection
-func (m *MongoClient) FindOne(ctx context.Context, db string, collection string, filter any, opts ...any) (any, error) {
+// FindOne executes a findOne query on the specified database and collection.
+// Returns a SingleResult that can be used with .Into() or .Raw() for fluent decoding.
+func (m *MongoClient) FindOne(ctx context.Context, db string, collection string, filter any, opts ...any) SingleResultInterface {
 	coll := m.Client.Database(db).Collection(collection)
 
 	// Convert opts to mongo.FindOneOptions if provided
@@ -229,29 +230,7 @@ func (m *MongoClient) FindOne(ctx context.Context, db string, collection string,
 		}
 	}
 
-	var result any
-	err := coll.FindOne(ctx, filter, findOneOpts...).Decode(&result)
-	if err != nil {
-		return nil, err
-	}
-
-	return result, nil
-}
-
-// FindOneInto executes a findOne query and decodes the result directly into the provided destination.
-// The dest parameter must be a pointer to the struct you want to decode into.
-func (m *MongoClient) FindOneInto(ctx context.Context, db string, collection string, filter any, dest any, opts ...any) error {
-	coll := m.Client.Database(db).Collection(collection)
-
-	// Convert opts to mongo.FindOneOptions if provided
-	var findOneOpts []*moptions.FindOneOptions
-	for _, opt := range opts {
-		if fo, ok := opt.(*moptions.FindOneOptions); ok {
-			findOneOpts = append(findOneOpts, fo)
-		}
-	}
-
-	return coll.FindOne(ctx, filter, findOneOpts...).Decode(dest)
+	return &SingleResult{result: coll.FindOne(ctx, filter, findOneOpts...)}
 }
 
 // InsertOne inserts a single document into the specified database and collection
@@ -276,4 +255,32 @@ func (m *MongoClient) InsertMany(ctx context.Context, db string, collection stri
 	}
 
 	return result.InsertedIDs, nil
+}
+
+// SingleResult wraps a MongoDB single result for fluent API usage
+type SingleResult struct {
+	result *mongo.SingleResult
+}
+
+// Into decodes the result directly into the provided destination.
+// The dest parameter must be a pointer to the struct you want to decode into.
+func (sr *SingleResult) Into(dest any) error {
+	return sr.result.Decode(dest)
+}
+
+// Raw returns the result as a raw any type (primitive.D).
+// This is useful when you need the raw BSON document.
+func (sr *SingleResult) Raw() (any, error) {
+	var result any
+	err := sr.result.Decode(&result)
+	if err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
+// Err returns any error that occurred during the query.
+// Returns mongo.ErrNoDocuments if no document was found.
+func (sr *SingleResult) Err() error {
+	return sr.result.Err()
 }

@@ -16,23 +16,45 @@ type MockDatabase struct {
 	// FindFunc allows customizing Find behavior
 	FindFunc func(ctx context.Context, db string, collection string, filter any, opts ...any) (any, error)
 
-	// FindOneFunc allows customizing FindOne behavior
-	FindOneFunc func(ctx context.Context, db string, collection string, filter any, opts ...any) (any, error)
-
-	// FindOneIntoFunc allows customizing FindOneInto behavior
-	FindOneIntoFunc func(ctx context.Context, db string, collection string, filter any, dest any, opts ...any) error
+	// FindOneFunc allows customizing FindOne behavior - returns a SingleResultInterface
+	FindOneFunc func(ctx context.Context, db string, collection string, filter any, opts ...any) SingleResultInterface
 
 	// Sequential response queues for multiple calls
-	PingQueue        []PingResponse
-	FindQueue        []FindResponse
-	FindOneQueue     []FindOneResponse
-	FindOneIntoQueue []FindOneIntoResponse
+	PingQueue    []PingResponse
+	FindQueue    []FindResponse
+	FindOneQueue []FindOneResponse
 
 	// Call tracking
-	PingCalls        []PingCall
-	FindCalls        []FindCall
-	FindOneCalls     []FindOneCall
-	FindOneIntoCalls []FindOneIntoCall
+	PingCalls    []PingCall
+	FindCalls    []FindCall
+	FindOneCalls []FindOneCall
+}
+
+// MockSingleResult implements SingleResultInterface for testing
+type MockSingleResult struct {
+	result any
+	err    error
+}
+
+// Into decodes the result into dest
+func (m *MockSingleResult) Into(dest any) error {
+	if m.err != nil {
+		return m.err
+	}
+	if m.result == nil {
+		return fmt.Errorf("no document found")
+	}
+	return copyResult(m.result, dest)
+}
+
+// Raw returns the raw result
+func (m *MockSingleResult) Raw() (any, error) {
+	return m.result, m.err
+}
+
+// Err returns any error
+func (m *MockSingleResult) Err() error {
+	return m.err
 }
 
 // PingResponse represents a queued response for Ping
@@ -49,12 +71,6 @@ type FindResponse struct {
 // FindOneResponse represents a queued response for FindOne
 type FindOneResponse struct {
 	Result any
-	Err    error
-}
-
-// FindOneIntoResponse represents a queued response for FindOneInto
-type FindOneIntoResponse struct {
-	Result any // Will be copied into dest
 	Err    error
 }
 
@@ -81,16 +97,6 @@ type FindOneCall struct {
 	Opts       []any
 }
 
-// FindOneIntoCall records a call to FindOneInto
-type FindOneIntoCall struct {
-	Ctx        context.Context
-	Db         string
-	Collection string
-	Filter     any
-	Dest       any
-	Opts       []any
-}
-
 // NewMockDatabase creates a new MockDatabase with sensible defaults
 func NewMockDatabase() *MockDatabase {
 	return &MockDatabase{
@@ -100,20 +106,15 @@ func NewMockDatabase() *MockDatabase {
 		FindFunc: func(ctx context.Context, db string, collection string, filter any, opts ...any) (any, error) {
 			return []any{}, nil
 		},
-		FindOneFunc: func(ctx context.Context, db string, collection string, filter any, opts ...any) (any, error) {
-			return nil, fmt.Errorf("no document found")
+		FindOneFunc: func(ctx context.Context, db string, collection string, filter any, opts ...any) SingleResultInterface {
+			return &MockSingleResult{result: nil, err: fmt.Errorf("no document found")}
 		},
-		FindOneIntoFunc: func(ctx context.Context, db string, collection string, filter any, dest any, opts ...any) error {
-			return fmt.Errorf("no document found")
-		},
-		PingCalls:        []PingCall{},
-		FindCalls:        []FindCall{},
-		FindOneCalls:     []FindOneCall{},
-		FindOneIntoCalls: []FindOneIntoCall{},
-		PingQueue:        []PingResponse{},
-		FindQueue:        []FindResponse{},
-		FindOneQueue:     []FindOneResponse{},
-		FindOneIntoQueue: []FindOneIntoResponse{},
+		PingCalls:    []PingCall{},
+		FindCalls:    []FindCall{},
+		FindOneCalls: []FindOneCall{},
+		PingQueue:    []PingResponse{},
+		FindQueue:    []FindResponse{},
+		FindOneQueue: []FindOneResponse{},
 	}
 }
 
@@ -170,7 +171,7 @@ func (m *MockDatabase) Find(ctx context.Context, db string, collection string, f
 }
 
 // FindOne implements DatabaseInterface
-func (m *MockDatabase) FindOne(ctx context.Context, db string, collection string, filter any, opts ...any) (any, error) {
+func (m *MockDatabase) FindOne(ctx context.Context, db string, collection string, filter any, opts ...any) SingleResultInterface {
 	m.FindOneCalls = append(m.FindOneCalls, FindOneCall{
 		Ctx:        ctx,
 		Db:         db,
@@ -183,42 +184,14 @@ func (m *MockDatabase) FindOne(ctx context.Context, db string, collection string
 	if len(m.FindOneQueue) > 0 {
 		response := m.FindOneQueue[0]
 		m.FindOneQueue = m.FindOneQueue[1:]
-		return response.Result, response.Err
+		return &MockSingleResult{result: response.Result, err: response.Err}
 	}
 
 	// Fall back to FindOneFunc
 	if m.FindOneFunc != nil {
 		return m.FindOneFunc(ctx, db, collection, filter, opts...)
 	}
-	return nil, fmt.Errorf("no document found")
-}
-
-// FindOneInto implements DatabaseInterface
-func (m *MockDatabase) FindOneInto(ctx context.Context, db string, collection string, filter any, dest any, opts ...any) error {
-	m.FindOneIntoCalls = append(m.FindOneIntoCalls, FindOneIntoCall{
-		Ctx:        ctx,
-		Db:         db,
-		Collection: collection,
-		Filter:     filter,
-		Dest:       dest,
-		Opts:       opts,
-	})
-
-	// Check if there's a queued response
-	if len(m.FindOneIntoQueue) > 0 {
-		response := m.FindOneIntoQueue[0]
-		m.FindOneIntoQueue = m.FindOneIntoQueue[1:]
-		if response.Result != nil {
-			return copyResult(response.Result, dest)
-		}
-		return response.Err
-	}
-
-	// Fall back to FindOneIntoFunc
-	if m.FindOneIntoFunc != nil {
-		return m.FindOneIntoFunc(ctx, db, collection, filter, dest, opts...)
-	}
-	return fmt.Errorf("no document found")
+	return &MockSingleResult{result: nil, err: fmt.Errorf("no document found")}
 }
 
 // copyResult copies src into dest using BSON marshaling (for mock testing)
@@ -245,11 +218,9 @@ func (m *MockDatabase) Reset() {
 	m.PingCalls = []PingCall{}
 	m.FindCalls = []FindCall{}
 	m.FindOneCalls = []FindOneCall{}
-	m.FindOneIntoCalls = []FindOneIntoCall{}
 	m.PingQueue = []PingResponse{}
 	m.FindQueue = []FindResponse{}
 	m.FindOneQueue = []FindOneResponse{}
-	m.FindOneIntoQueue = []FindOneIntoResponse{}
 }
 
 // ExpectPing sets up an expectation for Ping
@@ -270,19 +241,8 @@ func (m *MockDatabase) ExpectFind(result any, err error) *MockDatabase {
 
 // ExpectFindOne sets up an expectation for FindOne
 func (m *MockDatabase) ExpectFindOne(result any, err error) *MockDatabase {
-	m.FindOneFunc = func(ctx context.Context, db string, collection string, filter any, opts ...any) (any, error) {
-		return result, err
-	}
-	return m
-}
-
-// ExpectFindOneInto sets up an expectation for FindOneInto
-func (m *MockDatabase) ExpectFindOneInto(result any, err error) *MockDatabase {
-	m.FindOneIntoFunc = func(ctx context.Context, db string, collection string, filter any, dest any, opts ...any) error {
-		if result != nil {
-			copyResult(result, dest)
-		}
-		return err
+	m.FindOneFunc = func(ctx context.Context, db string, collection string, filter any, opts ...any) SingleResultInterface {
+		return &MockSingleResult{result: result, err: err}
 	}
 	return m
 }
@@ -302,11 +262,5 @@ func (m *MockDatabase) QueueFind(result any, err error) *MockDatabase {
 // QueueFindOne adds a FindOne response to the queue for sequential calls
 func (m *MockDatabase) QueueFindOne(result any, err error) *MockDatabase {
 	m.FindOneQueue = append(m.FindOneQueue, FindOneResponse{Result: result, Err: err})
-	return m
-}
-
-// QueueFindOneInto adds a FindOneInto response to the queue for sequential calls
-func (m *MockDatabase) QueueFindOneInto(result any, err error) *MockDatabase {
-	m.FindOneIntoQueue = append(m.FindOneIntoQueue, FindOneIntoResponse{Result: result, Err: err})
 	return m
 }
