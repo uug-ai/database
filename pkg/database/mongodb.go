@@ -322,3 +322,50 @@ func (sr *SingleResult) Raw() (any, error) {
 func (sr *SingleResult) Err() error {
 	return sr.result.Err()
 }
+
+// UpdateResult wraps a MongoDB update result for fluent API usage
+type UpdateResult struct {
+	result *mongo.UpdateResult
+}
+
+// MatchedCount returns the number of documents matched by the filter
+func (ur *UpdateResult) MatchedCount() int64 {
+	return ur.result.MatchedCount
+}
+
+// ModifiedCount returns the number of documents modified by the operation
+func (ur *UpdateResult) ModifiedCount() int64 {
+	return ur.result.ModifiedCount
+}
+
+// UpsertedCount returns the number of documents upserted by the operation
+func (ur *UpdateResult) UpsertedCount() int64 {
+	return ur.result.UpsertedCount
+}
+
+// UpsertedID returns the _id of the upserted document, or nil if no upsert occurred
+func (ur *UpdateResult) UpsertedID() any {
+	return ur.result.UpsertedID
+}
+
+// UpdateOne executes an update query on a single document in the specified database and collection.
+// Returns an UpdateResult that provides access to matched, modified, and upserted counts.
+// Supports *moptions.UpdateOptions in opts.
+func (m *MongoClient) UpdateOne(ctx context.Context, db string, collection string, filter any, update any, opts ...any) (UpdateResultInterface, error) {
+	coll := m.Client.Database(db).Collection(collection)
+
+	// Convert opts to mongo.UpdateOptions if provided
+	var updateOpts []*moptions.UpdateOptions
+	for _, opt := range opts {
+		if uo, ok := opt.(*moptions.UpdateOptions); ok {
+			updateOpts = append(updateOpts, uo)
+		}
+	}
+
+	result, err := coll.UpdateOne(ctx, filter, update, updateOpts...)
+	if err != nil {
+		return nil, err
+	}
+
+	return &UpdateResult{result: result}, nil
+}
