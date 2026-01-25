@@ -180,18 +180,35 @@ func (m *MockDatabase) FindOne(ctx context.Context, db string, collection string
 		Opts:       opts,
 	})
 
+	var result any
+	var err error
+
 	// Check if there's a queued response
 	if len(m.FindOneQueue) > 0 {
 		response := m.FindOneQueue[0]
 		m.FindOneQueue = m.FindOneQueue[1:]
-		return &MockSingleResult{result: response.Result, err: response.Err}
+		result = response.Result
+		err = response.Err
+	} else if m.FindOneFunc != nil {
+		// Fall back to FindOneFunc
+		mockResult := m.FindOneFunc(ctx, db, collection, filter, opts...)
+		result, err = mockResult.Raw()
+	} else {
+		result = nil
+		err = fmt.Errorf("no document found")
 	}
 
-	// Fall back to FindOneFunc
-	if m.FindOneFunc != nil {
-		return m.FindOneFunc(ctx, db, collection, filter, opts...)
+	// Apply projection if present
+	if result != nil && err == nil {
+		for _, opt := range opts {
+			if proj, ok := opt.(*Projection); ok {
+				result = applyProjection(result, proj)
+				break
+			}
+		}
 	}
-	return &MockSingleResult{result: nil, err: fmt.Errorf("no document found")}
+
+	return &MockSingleResult{result: result, err: err}
 }
 
 // copyResult copies src into dest using BSON marshaling (for mock testing)
@@ -201,6 +218,56 @@ func copyResult(src any, dest any) error {
 		return err
 	}
 	return bson.Unmarshal(bytes, dest)
+}
+
+// applyProjection filters fields from a result based on projection rules
+func applyProjection(result any, proj *Projection) any {
+	if proj == nil || len(proj.fields) == 0 {
+		return result
+	}
+
+	// Convert result to bson.M for manipulation
+	bytes, err := bson.Marshal(result)
+	if err != nil {
+		return result
+	}
+
+	var doc bson.M
+	if err := bson.Unmarshal(bytes, &doc); err != nil {
+		return result
+	}
+
+	// Determine if it's inclusion or exclusion mode
+	hasInclusion := false
+	hasExclusion := false
+	for _, value := range proj.fields {
+		if value == 1 {
+			hasInclusion = true
+		} else if value == 0 {
+			hasExclusion = true
+		}
+	}
+
+	if hasInclusion {
+		// Inclusion mode: only keep specified fields
+		filtered := bson.M{}
+		for field := range proj.fields {
+			if val, exists := doc[field]; exists && proj.fields[field] == 1 {
+				filtered[field] = val
+			}
+		}
+		return filtered
+	} else if hasExclusion {
+		// Exclusion mode: remove specified fields
+		for field := range proj.fields {
+			if proj.fields[field] == 0 {
+				delete(doc, field)
+			}
+		}
+		return doc
+	}
+
+	return result
 }
 
 // InsertOne implements DatabaseInterface
