@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/go-playground/validator/v10"
+	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/mongo"
 	moptions "go.mongodb.org/mongo-driver/mongo/options"
 	"go.opentelemetry.io/contrib/instrumentation/go.mongodb.org/mongo-driver/mongo/otelmongo"
@@ -101,6 +102,39 @@ func (b *MongoOptionsBuilder) SetRetryWrites(retryWrites bool) *MongoOptionsBuil
 // Build builds the Mongo options
 func (b *MongoOptionsBuilder) Build() *MongoOptions {
 	return b.options
+}
+
+// Projection provides a fluent API for building MongoDB projections without exposing bson
+type Projection struct {
+	fields bson.M
+}
+
+// NewProjection creates a new Projection builder
+func NewProjection() *Projection {
+	return &Projection{
+		fields: bson.M{},
+	}
+}
+
+// Include adds fields to include in the result (value: 1)
+func (p *Projection) Include(fields ...string) *Projection {
+	for _, field := range fields {
+		p.fields[field] = 1
+	}
+	return p
+}
+
+// Exclude adds fields to exclude from the result (value: 0)
+func (p *Projection) Exclude(fields ...string) *Projection {
+	for _, field := range fields {
+		p.fields[field] = 0
+	}
+	return p
+}
+
+// toBSON converts the projection to bson.M for internal use
+func (p *Projection) toBSON() bson.M {
+	return p.fields
 }
 
 // MongoClient wraps mongo.Client to implement DatabaseInterface
@@ -219,6 +253,7 @@ func (m *MongoClient) Find(ctx context.Context, db string, collection string, fi
 
 // FindOne executes a findOne query on the specified database and collection.
 // Returns a SingleResult that can be used with .Into() or .Raw() for fluent decoding.
+// Supports *moptions.FindOneOptions and *Projection in opts.
 func (m *MongoClient) FindOne(ctx context.Context, db string, collection string, filter any, opts ...any) SingleResultInterface {
 	coll := m.Client.Database(db).Collection(collection)
 
@@ -227,6 +262,9 @@ func (m *MongoClient) FindOne(ctx context.Context, db string, collection string,
 	for _, opt := range opts {
 		if fo, ok := opt.(*moptions.FindOneOptions); ok {
 			findOneOpts = append(findOneOpts, fo)
+		} else if proj, ok := opt.(*Projection); ok {
+			// Convert Projection to FindOneOptions with SetProjection
+			findOneOpts = append(findOneOpts, moptions.FindOne().SetProjection(proj.toBSON()))
 		}
 	}
 
