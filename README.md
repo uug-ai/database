@@ -140,6 +140,83 @@ func main() {
 }
 ```
 
+### Query Operations
+
+#### FindOne with Fluent API
+
+The `FindOne` method returns a `SingleResultInterface` that provides a fluent API for decoding results:
+
+```go
+// Define your struct
+type User struct {
+    ID    string `bson:"_id"`
+    Name  string `bson:"name"`
+    Email string `bson:"email"`
+}
+
+// Decode directly into a struct using .Into()
+var user User
+err := db.Client.FindOne(ctx, "mydb", "users", map[string]any{"name": "Alice"}).Into(&user)
+if err != nil {
+    log.Fatal(err)
+}
+fmt.Printf("Found user: %s (%s)\n", user.Name, user.Email)
+```
+
+**Get raw result:**
+
+```go
+// Get the raw result as any (primitive.D) using .Raw()
+result, err := db.Client.FindOne(ctx, "mydb", "users", map[string]any{"name": "Alice"}).Raw()
+if err != nil {
+    log.Fatal(err)
+}
+```
+
+**Check for errors before decoding:**
+
+```go
+// Check if there was an error (e.g., no document found)
+singleResult := db.Client.FindOne(ctx, "mydb", "users", map[string]any{"name": "Unknown"})
+if singleResult.Err() != nil {
+    log.Printf("Query error: %v", singleResult.Err())
+    return
+}
+
+var user User
+err := singleResult.Into(&user)
+```
+
+#### Find (Multiple Documents)
+
+```go
+// Find returns []any
+results, err := db.Client.Find(ctx, "mydb", "users", map[string]any{"status": "active"})
+if err != nil {
+    log.Fatal(err)
+}
+
+for _, doc := range results.([]any) {
+    fmt.Println(doc)
+}
+```
+
+#### Insert Operations
+
+```go
+// Insert one document
+id, err := db.Client.InsertOne(ctx, "mydb", "users", map[string]any{
+    "name":  "Bob",
+    "email": "bob@example.com",
+})
+
+// Insert multiple documents
+ids, err := db.Client.InsertMany(ctx, "mydb", "users", []any{
+    map[string]any{"name": "Charlie"},
+    map[string]any{"name": "Diana"},
+})
+```
+
 **Available Methods:**
 
 - `.SetUri(uri string)` - MongoDB connection URI
@@ -335,15 +412,30 @@ func TestMyFunction(t *testing.T) {
         t.Fatalf("failed to create database: %v", err)
     }
     
-    // Use the database - it will use your mock
-    result, err := db.Client.FindOne(context.Background(), "testdb", "users", map[string]any{"id": 1})
+    // Use the fluent API to decode into a struct
+    var user struct {
+        ID    int    `bson:"id"`
+        Name  string `bson:"name"`
+        Email string `bson:"email"`
+    }
+    err = db.Client.FindOne(context.Background(), "testdb", "users", map[string]any{"id": 1}).Into(&user)
     if err != nil {
         t.Errorf("unexpected error: %v", err)
     }
     
-    // Verify the call was tracked
-    if len(mock.FindOneCalls) != 1 {
-        t.Errorf("expected 1 FindOne call, got %d", len(mock.FindOneCalls))
+    if user.Name != "Alice" {
+        t.Errorf("expected name 'Alice', got '%s'", user.Name)
+    }
+    
+    // Or get the raw result
+    result, err := db.Client.FindOne(context.Background(), "testdb", "users", map[string]any{"id": 1}).Raw()
+    if err != nil {
+        t.Errorf("unexpected error: %v", err)
+    }
+    
+    // Verify the calls were tracked
+    if len(mock.FindOneCalls) != 2 {
+        t.Errorf("expected 2 FindOne calls, got %d", len(mock.FindOneCalls))
     }
 }
 ```
@@ -451,7 +543,7 @@ mock := database.NewMockDatabase()
 
 // Make some calls
 mock.Find(ctx, "testdb", "users", map[string]any{})
-mock.FindOne(ctx, "testdb", "users", map[string]any{"id": 1})
+mock.FindOne(ctx, "testdb", "users", map[string]any{"id": 1}).Raw()
 
 // Verify the calls
 if len(mock.FindCalls) != 1 {
@@ -474,7 +566,7 @@ The `MockDatabase` type provides:
 - **`NewMockDatabase()`**: Creates a new mock with sensible defaults
 - **`ExpectPing(err error)`**: Set expected Ping behavior (for all calls)
 - **`ExpectFind(result any, err error)`**: Set expected Find behavior (for all calls)
-- **`ExpectFindOne(result any, err error)`**: Set expected FindOne behavior (for all calls)
+- **`ExpectFindOne(result any, err error)`**: Set expected FindOne behavior (for all calls) - returns a `SingleResultInterface`
 
 **Sequential Queue Methods:**
 - **`QueuePing(err error)`**: Add a Ping response to the queue for sequential calls
@@ -484,7 +576,7 @@ The `MockDatabase` type provides:
 **Custom Function Handlers:**
 - **`PingFunc`**: Custom function for Ping behavior
 - **`FindFunc`**: Custom function for Find behavior
-- **`FindOneFunc`**: Custom function for FindOne behavior
+- **`FindOneFunc`**: Custom function for FindOne behavior (should return `SingleResultInterface`)
 
 **Call Tracking:**
 - **`PingCalls`**: Slice of all Ping calls made
@@ -493,6 +585,11 @@ The `MockDatabase` type provides:
 
 **Utility Methods:**
 - **`Reset()`**: Clear all call history and queues
+
+**SingleResultInterface Methods:**
+- **`.Into(dest any) error`**: Decode the result directly into a struct pointer
+- **`.Raw() (any, error)`**: Get the raw result as `any`
+- **`.Err() error`**: Get any error from the query
 
 **Execution Priority:**
 1. Queued responses (consumed FIFO) - highest priority

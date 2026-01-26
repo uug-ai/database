@@ -27,11 +27,11 @@ func TestMockDatabase(t *testing.T) {
 		}
 
 		// Test FindOne default (should return error)
-		result, err = mock.FindOne(context.Background(), "testdb", "users", map[string]any{"id": 1})
+		result2, err := mock.FindOne(context.Background(), "testdb", "users", map[string]any{"id": 1}).Raw()
 		if err == nil {
 			t.Error("expected error, got nil")
 		}
-		if result != nil {
+		if result2 != nil {
 			t.Error("expected nil result")
 		}
 	})
@@ -98,7 +98,7 @@ func TestMockDatabase(t *testing.T) {
 
 		mock.ExpectFindOne(expectedUser, nil)
 
-		result, err := mock.FindOne(context.Background(), "testdb", "users", map[string]any{"id": 1})
+		result, err := mock.FindOne(context.Background(), "testdb", "users", map[string]any{"id": 1}).Raw()
 		if err != nil {
 			t.Errorf("expected nil error, got %v", err)
 		}
@@ -124,7 +124,7 @@ func TestMockDatabase(t *testing.T) {
 
 		mock.ExpectFindOne(nil, expectedErr)
 
-		result, err := mock.FindOne(context.Background(), "testdb", "users", map[string]any{"id": 999})
+		result, err := mock.FindOne(context.Background(), "testdb", "users", map[string]any{"id": 999}).Raw()
 		if err != expectedErr {
 			t.Errorf("expected error '%v', got '%v'", expectedErr, err)
 		}
@@ -333,7 +333,7 @@ func TestMockDatabaseSequentialCalls(t *testing.T) {
 			QueueFindOne(nil, fmt.Errorf("not found"))
 
 		// First call
-		result1, err := mock.FindOne(context.Background(), "testdb", "users", map[string]any{"id": 1})
+		result1, err := mock.FindOne(context.Background(), "testdb", "users", map[string]any{"id": 1}).Raw()
 		if err != nil {
 			t.Errorf("unexpected error: %v", err)
 		}
@@ -342,7 +342,7 @@ func TestMockDatabaseSequentialCalls(t *testing.T) {
 		}
 
 		// Second call
-		result2, err := mock.FindOne(context.Background(), "testdb", "users", map[string]any{"id": 2})
+		result2, err := mock.FindOne(context.Background(), "testdb", "users", map[string]any{"id": 2}).Raw()
 		if err != nil {
 			t.Errorf("unexpected error: %v", err)
 		}
@@ -351,7 +351,7 @@ func TestMockDatabaseSequentialCalls(t *testing.T) {
 		}
 
 		// Third call returns error
-		_, err = mock.FindOne(context.Background(), "testdb", "users", map[string]any{"id": 3})
+		_, err = mock.FindOne(context.Background(), "testdb", "users", map[string]any{"id": 3}).Raw()
 		if err == nil || err.Error() != "not found" {
 			t.Errorf("expected 'not found' error, got %v", err)
 		}

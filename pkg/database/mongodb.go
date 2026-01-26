@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/go-playground/validator/v10"
+	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/mongo"
 	moptions "go.mongodb.org/mongo-driver/mongo/options"
 	"go.opentelemetry.io/contrib/instrumentation/go.mongodb.org/mongo-driver/mongo/otelmongo"
@@ -101,6 +102,39 @@ func (b *MongoOptionsBuilder) SetRetryWrites(retryWrites bool) *MongoOptionsBuil
 // Build builds the Mongo options
 func (b *MongoOptionsBuilder) Build() *MongoOptions {
 	return b.options
+}
+
+// Projection provides a fluent API for building MongoDB projections without exposing bson
+type Projection struct {
+	fields bson.M
+}
+
+// NewProjection creates a new Projection builder
+func NewProjection() *Projection {
+	return &Projection{
+		fields: bson.M{},
+	}
+}
+
+// Include adds fields to include in the result (value: 1)
+func (p *Projection) Include(fields ...string) *Projection {
+	for _, field := range fields {
+		p.fields[field] = 1
+	}
+	return p
+}
+
+// Exclude adds fields to exclude from the result (value: 0)
+func (p *Projection) Exclude(fields ...string) *Projection {
+	for _, field := range fields {
+		p.fields[field] = 0
+	}
+	return p
+}
+
+// toBSON converts the projection to bson.M for internal use
+func (p *Projection) toBSON() bson.M {
+	return p.fields
 }
 
 // MongoClient wraps mongo.Client to implement DatabaseInterface
@@ -217,8 +251,10 @@ func (m *MongoClient) Find(ctx context.Context, db string, collection string, fi
 	return results, nil
 }
 
-// FindOne executes a findOne query on the specified database and collection
-func (m *MongoClient) FindOne(ctx context.Context, db string, collection string, filter any, opts ...any) (any, error) {
+// FindOne executes a findOne query on the specified database and collection.
+// Returns a SingleResult that can be used with .Into() or .Raw() for fluent decoding.
+// Supports *moptions.FindOneOptions and *Projection in opts.
+func (m *MongoClient) FindOne(ctx context.Context, db string, collection string, filter any, opts ...any) SingleResultInterface {
 	coll := m.Client.Database(db).Collection(collection)
 
 	// Convert opts to mongo.FindOneOptions if provided
@@ -226,16 +262,13 @@ func (m *MongoClient) FindOne(ctx context.Context, db string, collection string,
 	for _, opt := range opts {
 		if fo, ok := opt.(*moptions.FindOneOptions); ok {
 			findOneOpts = append(findOneOpts, fo)
+		} else if proj, ok := opt.(*Projection); ok {
+			// Convert Projection to FindOneOptions with SetProjection
+			findOneOpts = append(findOneOpts, moptions.FindOne().SetProjection(proj.toBSON()))
 		}
 	}
 
-	var result any
-	err := coll.FindOne(ctx, filter, findOneOpts...).Decode(&result)
-	if err != nil {
-		return nil, err
-	}
-
-	return result, nil
+	return &SingleResult{result: coll.FindOne(ctx, filter, findOneOpts...)}
 }
 
 // InsertOne inserts a single document into the specified database and collection
@@ -260,4 +293,79 @@ func (m *MongoClient) InsertMany(ctx context.Context, db string, collection stri
 	}
 
 	return result.InsertedIDs, nil
+}
+
+// SingleResult wraps a MongoDB single result for fluent API usage
+type SingleResult struct {
+	result *mongo.SingleResult
+}
+
+// Into decodes the result directly into the provided destination.
+// The dest parameter must be a pointer to the struct you want to decode into.
+func (sr *SingleResult) Into(dest any) error {
+	return sr.result.Decode(dest)
+}
+
+// Raw returns the result as a raw any type (primitive.D).
+// This is useful when you need the raw BSON document.
+func (sr *SingleResult) Raw() (any, error) {
+	var result any
+	err := sr.result.Decode(&result)
+	if err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
+// Err returns any error that occurred during the query.
+// Returns mongo.ErrNoDocuments if no document was found.
+func (sr *SingleResult) Err() error {
+	return sr.result.Err()
+}
+
+// UpdateResult wraps a MongoDB update result for fluent API usage
+type UpdateResult struct {
+	result *mongo.UpdateResult
+}
+
+// MatchedCount returns the number of documents matched by the filter
+func (ur *UpdateResult) MatchedCount() int64 {
+	return ur.result.MatchedCount
+}
+
+// ModifiedCount returns the number of documents modified by the operation
+func (ur *UpdateResult) ModifiedCount() int64 {
+	return ur.result.ModifiedCount
+}
+
+// UpsertedCount returns the number of documents upserted by the operation
+func (ur *UpdateResult) UpsertedCount() int64 {
+	return ur.result.UpsertedCount
+}
+
+// UpsertedID returns the _id of the upserted document, or nil if no upsert occurred
+func (ur *UpdateResult) UpsertedID() any {
+	return ur.result.UpsertedID
+}
+
+// UpdateOne executes an update query on a single document in the specified database and collection.
+// Returns an UpdateResult that provides access to matched, modified, and upserted counts.
+// Supports *moptions.UpdateOptions in opts.
+func (m *MongoClient) UpdateOne(ctx context.Context, db string, collection string, filter any, update any, opts ...any) (UpdateResultInterface, error) {
+	coll := m.Client.Database(db).Collection(collection)
+
+	// Convert opts to mongo.UpdateOptions if provided
+	var updateOpts []*moptions.UpdateOptions
+	for _, opt := range opts {
+		if uo, ok := opt.(*moptions.UpdateOptions); ok {
+			updateOpts = append(updateOpts, uo)
+		}
+	}
+
+	result, err := coll.UpdateOne(ctx, filter, update, updateOpts...)
+	if err != nil {
+		return nil, err
+	}
+
+	return &UpdateResult{result: result}, nil
 }

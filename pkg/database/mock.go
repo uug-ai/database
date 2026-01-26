@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"time"
+
+	"go.mongodb.org/mongo-driver/bson"
 )
 
 // MockDatabase is a mock implementation of DatabaseInterface for testing
@@ -14,18 +16,78 @@ type MockDatabase struct {
 	// FindFunc allows customizing Find behavior
 	FindFunc func(ctx context.Context, db string, collection string, filter any, opts ...any) (any, error)
 
-	// FindOneFunc allows customizing FindOne behavior
-	FindOneFunc func(ctx context.Context, db string, collection string, filter any, opts ...any) (any, error)
+	// FindOneFunc allows customizing FindOne behavior - returns a SingleResultInterface
+	FindOneFunc func(ctx context.Context, db string, collection string, filter any, opts ...any) SingleResultInterface
+
+	// UpdateOneFunc allows customizing UpdateOne behavior
+	UpdateOneFunc func(ctx context.Context, db string, collection string, filter any, update any, opts ...any) (UpdateResultInterface, error)
 
 	// Sequential response queues for multiple calls
-	PingQueue    []PingResponse
-	FindQueue    []FindResponse
-	FindOneQueue []FindOneResponse
+	PingQueue      []PingResponse
+	FindQueue      []FindResponse
+	FindOneQueue   []FindOneResponse
+	UpdateOneQueue []UpdateOneResponse
 
 	// Call tracking
-	PingCalls    []PingCall
-	FindCalls    []FindCall
-	FindOneCalls []FindOneCall
+	PingCalls      []PingCall
+	FindCalls      []FindCall
+	FindOneCalls   []FindOneCall
+	UpdateOneCalls []UpdateOneCall
+}
+
+// MockSingleResult implements SingleResultInterface for testing
+type MockSingleResult struct {
+	result any
+	err    error
+}
+
+// MockUpdateResult implements UpdateResultInterface for testing
+type MockUpdateResult struct {
+	matchedCount  int64
+	modifiedCount int64
+	upsertedCount int64
+	upsertedID    any
+}
+
+// MatchedCount returns the number of documents matched
+func (m *MockUpdateResult) MatchedCount() int64 {
+	return m.matchedCount
+}
+
+// ModifiedCount returns the number of documents modified
+func (m *MockUpdateResult) ModifiedCount() int64 {
+	return m.modifiedCount
+}
+
+// UpsertedCount returns the number of documents upserted
+func (m *MockUpdateResult) UpsertedCount() int64 {
+	return m.upsertedCount
+}
+
+// UpsertedID returns the ID of the upserted document
+func (m *MockUpdateResult) UpsertedID() any {
+	return m.upsertedID
+}
+
+// Into decodes the result into dest
+func (m *MockSingleResult) Into(dest any) error {
+	if m.err != nil {
+		return m.err
+	}
+	if m.result == nil {
+		return fmt.Errorf("no document found")
+	}
+	return copyResult(m.result, dest)
+}
+
+// Raw returns the raw result
+func (m *MockSingleResult) Raw() (any, error) {
+	return m.result, m.err
+}
+
+// Err returns any error
+func (m *MockSingleResult) Err() error {
+	return m.err
 }
 
 // PingResponse represents a queued response for Ping
@@ -43,6 +105,15 @@ type FindResponse struct {
 type FindOneResponse struct {
 	Result any
 	Err    error
+}
+
+// UpdateOneResponse represents a queued response for UpdateOne
+type UpdateOneResponse struct {
+	MatchedCount  int64
+	ModifiedCount int64
+	UpsertedCount int64
+	UpsertedID    any
+	Err           error
 }
 
 // PingCall records a call to Ping
@@ -68,6 +139,16 @@ type FindOneCall struct {
 	Opts       []any
 }
 
+// UpdateOneCall records a call to UpdateOne
+type UpdateOneCall struct {
+	Ctx        context.Context
+	Db         string
+	Collection string
+	Filter     any
+	Update     any
+	Opts       []any
+}
+
 // NewMockDatabase creates a new MockDatabase with sensible defaults
 func NewMockDatabase() *MockDatabase {
 	return &MockDatabase{
@@ -77,15 +158,20 @@ func NewMockDatabase() *MockDatabase {
 		FindFunc: func(ctx context.Context, db string, collection string, filter any, opts ...any) (any, error) {
 			return []any{}, nil
 		},
-		FindOneFunc: func(ctx context.Context, db string, collection string, filter any, opts ...any) (any, error) {
-			return nil, fmt.Errorf("no document found")
+		FindOneFunc: func(ctx context.Context, db string, collection string, filter any, opts ...any) SingleResultInterface {
+			return &MockSingleResult{result: nil, err: fmt.Errorf("no document found")}
 		},
-		PingCalls:    []PingCall{},
-		FindCalls:    []FindCall{},
-		FindOneCalls: []FindOneCall{},
-		PingQueue:    []PingResponse{},
-		FindQueue:    []FindResponse{},
-		FindOneQueue: []FindOneResponse{},
+		UpdateOneFunc: func(ctx context.Context, db string, collection string, filter any, update any, opts ...any) (UpdateResultInterface, error) {
+			return &MockUpdateResult{matchedCount: 1, modifiedCount: 1}, nil
+		},
+		PingCalls:      []PingCall{},
+		FindCalls:      []FindCall{},
+		FindOneCalls:   []FindOneCall{},
+		UpdateOneCalls: []UpdateOneCall{},
+		PingQueue:      []PingResponse{},
+		FindQueue:      []FindResponse{},
+		FindOneQueue:   []FindOneResponse{},
+		UpdateOneQueue: []UpdateOneResponse{},
 	}
 }
 
@@ -142,7 +228,7 @@ func (m *MockDatabase) Find(ctx context.Context, db string, collection string, f
 }
 
 // FindOne implements DatabaseInterface
-func (m *MockDatabase) FindOne(ctx context.Context, db string, collection string, filter any, opts ...any) (any, error) {
+func (m *MockDatabase) FindOne(ctx context.Context, db string, collection string, filter any, opts ...any) SingleResultInterface {
 	m.FindOneCalls = append(m.FindOneCalls, FindOneCall{
 		Ctx:        ctx,
 		Db:         db,
@@ -151,18 +237,127 @@ func (m *MockDatabase) FindOne(ctx context.Context, db string, collection string
 		Opts:       opts,
 	})
 
+	var result any
+	var err error
+
 	// Check if there's a queued response
 	if len(m.FindOneQueue) > 0 {
 		response := m.FindOneQueue[0]
 		m.FindOneQueue = m.FindOneQueue[1:]
-		return response.Result, response.Err
+		result = response.Result
+		err = response.Err
+	} else if m.FindOneFunc != nil {
+		// Fall back to FindOneFunc
+		mockResult := m.FindOneFunc(ctx, db, collection, filter, opts...)
+		result, err = mockResult.Raw()
+	} else {
+		result = nil
+		err = fmt.Errorf("no document found")
 	}
 
-	// Fall back to FindOneFunc
-	if m.FindOneFunc != nil {
-		return m.FindOneFunc(ctx, db, collection, filter, opts...)
+	// Apply projection if present
+	if result != nil && err == nil {
+		for _, opt := range opts {
+			if proj, ok := opt.(*Projection); ok {
+				result = applyProjection(result, proj)
+				break
+			}
+		}
 	}
-	return nil, fmt.Errorf("no document found")
+
+	return &MockSingleResult{result: result, err: err}
+}
+
+// copyResult copies src into dest using BSON marshaling (for mock testing)
+func copyResult(src any, dest any) error {
+	bytes, err := bson.Marshal(src)
+	if err != nil {
+		return err
+	}
+	return bson.Unmarshal(bytes, dest)
+}
+
+// applyProjection filters fields from a result based on projection rules
+func applyProjection(result any, proj *Projection) any {
+	if proj == nil || len(proj.fields) == 0 {
+		return result
+	}
+
+	// Convert result to bson.M for manipulation
+	bytes, err := bson.Marshal(result)
+	if err != nil {
+		return result
+	}
+
+	var doc bson.M
+	if err := bson.Unmarshal(bytes, &doc); err != nil {
+		return result
+	}
+
+	// Determine if it's inclusion or exclusion mode
+	hasInclusion := false
+	hasExclusion := false
+	for _, value := range proj.fields {
+		if value == 1 {
+			hasInclusion = true
+		} else if value == 0 {
+			hasExclusion = true
+		}
+	}
+
+	if hasInclusion {
+		// Inclusion mode: only keep specified fields
+		filtered := bson.M{}
+		for field := range proj.fields {
+			if val, exists := doc[field]; exists && proj.fields[field] == 1 {
+				filtered[field] = val
+			}
+		}
+		return filtered
+	} else if hasExclusion {
+		// Exclusion mode: remove specified fields
+		for field := range proj.fields {
+			if proj.fields[field] == 0 {
+				delete(doc, field)
+			}
+		}
+		return doc
+	}
+
+	return result
+}
+
+// UpdateOne implements DatabaseInterface
+func (m *MockDatabase) UpdateOne(ctx context.Context, db string, collection string, filter any, update any, opts ...any) (UpdateResultInterface, error) {
+	m.UpdateOneCalls = append(m.UpdateOneCalls, UpdateOneCall{
+		Ctx:        ctx,
+		Db:         db,
+		Collection: collection,
+		Filter:     filter,
+		Update:     update,
+		Opts:       opts,
+	})
+
+	// Check if there's a queued response
+	if len(m.UpdateOneQueue) > 0 {
+		response := m.UpdateOneQueue[0]
+		m.UpdateOneQueue = m.UpdateOneQueue[1:]
+		if response.Err != nil {
+			return nil, response.Err
+		}
+		return &MockUpdateResult{
+			matchedCount:  response.MatchedCount,
+			modifiedCount: response.ModifiedCount,
+			upsertedCount: response.UpsertedCount,
+			upsertedID:    response.UpsertedID,
+		}, nil
+	}
+
+	// Fall back to UpdateOneFunc
+	if m.UpdateOneFunc != nil {
+		return m.UpdateOneFunc(ctx, db, collection, filter, update, opts...)
+	}
+	return &MockUpdateResult{matchedCount: 1, modifiedCount: 1}, nil
 }
 
 // InsertOne implements DatabaseInterface
@@ -180,9 +375,11 @@ func (m *MockDatabase) Reset() {
 	m.PingCalls = []PingCall{}
 	m.FindCalls = []FindCall{}
 	m.FindOneCalls = []FindOneCall{}
+	m.UpdateOneCalls = []UpdateOneCall{}
 	m.PingQueue = []PingResponse{}
 	m.FindQueue = []FindResponse{}
 	m.FindOneQueue = []FindOneResponse{}
+	m.UpdateOneQueue = []UpdateOneResponse{}
 }
 
 // ExpectPing sets up an expectation for Ping
@@ -203,8 +400,24 @@ func (m *MockDatabase) ExpectFind(result any, err error) *MockDatabase {
 
 // ExpectFindOne sets up an expectation for FindOne
 func (m *MockDatabase) ExpectFindOne(result any, err error) *MockDatabase {
-	m.FindOneFunc = func(ctx context.Context, db string, collection string, filter any, opts ...any) (any, error) {
-		return result, err
+	m.FindOneFunc = func(ctx context.Context, db string, collection string, filter any, opts ...any) SingleResultInterface {
+		return &MockSingleResult{result: result, err: err}
+	}
+	return m
+}
+
+// ExpectUpdateOne sets up an expectation for UpdateOne
+func (m *MockDatabase) ExpectUpdateOne(matchedCount, modifiedCount, upsertedCount int64, upsertedID any, err error) *MockDatabase {
+	m.UpdateOneFunc = func(ctx context.Context, db string, collection string, filter any, update any, opts ...any) (UpdateResultInterface, error) {
+		if err != nil {
+			return nil, err
+		}
+		return &MockUpdateResult{
+			matchedCount:  matchedCount,
+			modifiedCount: modifiedCount,
+			upsertedCount: upsertedCount,
+			upsertedID:    upsertedID,
+		}, nil
 	}
 	return m
 }
@@ -224,5 +437,17 @@ func (m *MockDatabase) QueueFind(result any, err error) *MockDatabase {
 // QueueFindOne adds a FindOne response to the queue for sequential calls
 func (m *MockDatabase) QueueFindOne(result any, err error) *MockDatabase {
 	m.FindOneQueue = append(m.FindOneQueue, FindOneResponse{Result: result, Err: err})
+	return m
+}
+
+// QueueUpdateOne adds an UpdateOne response to the queue for sequential calls
+func (m *MockDatabase) QueueUpdateOne(matchedCount, modifiedCount, upsertedCount int64, upsertedID any, err error) *MockDatabase {
+	m.UpdateOneQueue = append(m.UpdateOneQueue, UpdateOneResponse{
+		MatchedCount:  matchedCount,
+		ModifiedCount: modifiedCount,
+		UpsertedCount: upsertedCount,
+		UpsertedID:    upsertedID,
+		Err:           err,
+	})
 	return m
 }
