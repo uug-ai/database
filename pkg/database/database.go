@@ -15,6 +15,12 @@ type SingleResultInterface interface {
 	Err() error
 }
 
+// FindResultInterface defines the interface for find query results
+type FindResultInterface interface {
+	All(dest any) error
+	Err() error
+}
+
 // UpdateResultInterface defines the interface for update operation results
 type UpdateResultInterface interface {
 	MatchedCount() int64
@@ -26,7 +32,7 @@ type UpdateResultInterface interface {
 type DatabaseInterface interface {
 	GetTimeout() time.Duration
 	Ping(context.Context) error
-	Find(ctx context.Context, db string, collection string, filter any, opts ...any) (any, error)
+	Find(ctx context.Context, db string, collection string, filter any, opts ...any) FindResultInterface
 	FindOne(ctx context.Context, db string, collection string, filter any, opts ...any) SingleResultInterface
 	UpdateOne(ctx context.Context, db string, collection string, filter any, update any, opts ...any) (UpdateResultInterface, error)
 	Disconnect(ctx context.Context) error

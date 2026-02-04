@@ -18,11 +18,12 @@ func TestMockDatabase(t *testing.T) {
 		}
 
 		// Test Find default (should return empty slice)
-		result, err := mock.Find(context.Background(), "testdb", "users", map[string]any{"id": 1})
+		var results []any
+		err = mock.Find(context.Background(), "testdb", "users", map[string]any{"id": 1}).All(&results)
 		if err != nil {
 			t.Errorf("expected nil error, got %v", err)
 		}
-		if result == nil {
+		if results == nil {
 			t.Error("expected non-nil result")
 		}
 
@@ -62,14 +63,10 @@ func TestMockDatabase(t *testing.T) {
 
 		mock.ExpectFind(expectedData, nil)
 
-		result, err := mock.Find(context.Background(), "testdb", "users", map[string]any{})
+		var resultSlice []map[string]any
+		err := mock.Find(context.Background(), "testdb", "users", map[string]any{}).All(&resultSlice)
 		if err != nil {
 			t.Errorf("expected nil error, got %v", err)
-		}
-
-		resultSlice, ok := result.([]map[string]any)
-		if !ok {
-			t.Fatal("expected result to be []map[string]any")
 		}
 
 		if len(resultSlice) != 2 {
@@ -137,37 +134,39 @@ func TestMockDatabase(t *testing.T) {
 		mock := NewMockDatabase()
 
 		// Custom function that returns different results based on filter
-		mock.FindFunc = func(ctx context.Context, db string, collection string, filter any, opts ...any) (any, error) {
+		mock.FindFunc = func(ctx context.Context, db string, collection string, filter any, opts ...any) FindResultInterface {
 			filterMap, ok := filter.(map[string]any)
 			if !ok {
-				return nil, errors.New("invalid filter")
+				return &MockFindResult{results: nil, err: errors.New("invalid filter")}
 			}
 
 			if status, ok := filterMap["status"]; ok && status == "active" {
-				return []map[string]any{
+				return &MockFindResult{results: []map[string]any{
 					{"id": 1, "status": "active"},
 					{"id": 2, "status": "active"},
-				}, nil
+				}, err: nil}
 			}
 
-			return []map[string]any{}, nil
+			return &MockFindResult{results: []map[string]any{}, err: nil}
 		}
 
 		// Test with active status
-		result, err := mock.Find(context.Background(), "testdb", "users", map[string]any{"status": "active"})
+		var activeResults []map[string]any
+		err := mock.Find(context.Background(), "testdb", "users", map[string]any{"status": "active"}).All(&activeResults)
 		if err != nil {
 			t.Errorf("expected nil error, got %v", err)
 		}
-		if len(result.([]map[string]any)) != 2 {
+		if len(activeResults) != 2 {
 			t.Errorf("expected 2 results for active users")
 		}
 
 		// Test with inactive status
-		result, err = mock.Find(context.Background(), "testdb", "users", map[string]any{"status": "inactive"})
+		var inactiveResults []map[string]any
+		err = mock.Find(context.Background(), "testdb", "users", map[string]any{"status": "inactive"}).All(&inactiveResults)
 		if err != nil {
 			t.Errorf("expected nil error, got %v", err)
 		}
-		if len(result.([]map[string]any)) != 0 {
+		if len(inactiveResults) != 0 {
 			t.Errorf("expected 0 results for inactive users")
 		}
 
@@ -247,41 +246,42 @@ func TestMockDatabaseSequentialCalls(t *testing.T) {
 			QueueFind(settings, nil)
 
 		// First call returns users
-		result1, err := mock.Find(context.Background(), "testdb", "users", map[string]any{})
+		var usersResult []map[string]any
+		err := mock.Find(context.Background(), "testdb", "users", map[string]any{}).All(&usersResult)
 		if err != nil {
 			t.Errorf("unexpected error on first call: %v", err)
 		}
-		usersResult := result1.([]map[string]any)
 		if len(usersResult) != 2 || usersResult[0]["name"] != "Alice" {
 			t.Error("first call should return users")
 		}
 
 		// Second call returns notifications
-		result2, err := mock.Find(context.Background(), "testdb", "notifications", map[string]any{})
+		var notificationsResult []map[string]any
+		err = mock.Find(context.Background(), "testdb", "notifications", map[string]any{}).All(&notificationsResult)
 		if err != nil {
 			t.Errorf("unexpected error on second call: %v", err)
 		}
-		notificationsResult := result2.([]map[string]any)
 		if len(notificationsResult) != 2 || notificationsResult[0]["message"] != "Hello" {
 			t.Error("second call should return notifications")
 		}
 
 		// Third call returns settings
-		result3, err := mock.Find(context.Background(), "testdb", "settings", map[string]any{})
+		var settingsResult []map[string]any
+		err = mock.Find(context.Background(), "testdb", "settings", map[string]any{}).All(&settingsResult)
 		if err != nil {
 			t.Errorf("unexpected error on third call: %v", err)
 		}
-		settingsResult := result3.([]map[string]any)
 		if len(settingsResult) != 1 || settingsResult[0]["key"] != "theme" {
 			t.Error("third call should return settings")
 		}
 
 		// Fourth call falls back to default behavior (empty slice)
-		result4, err := mock.Find(context.Background(), "testdb", "other", map[string]any{})
+		var otherResult []any
+		err = mock.Find(context.Background(), "testdb", "other", map[string]any{}).All(&otherResult)
 		if err != nil {
 			t.Errorf("unexpected error on fourth call: %v", err)
 		}
-		if len(result4.([]any)) != 0 {
+		if len(otherResult) != 0 {
 			t.Error("fourth call should return empty slice (default)")
 		}
 
@@ -300,26 +300,29 @@ func TestMockDatabaseSequentialCalls(t *testing.T) {
 			QueueFind([]map[string]any{{"id": 2}}, nil)
 
 		// First call succeeds
-		result1, err := mock.Find(context.Background(), "testdb", "users", map[string]any{})
+		var result1 []map[string]any
+		err := mock.Find(context.Background(), "testdb", "users", map[string]any{}).All(&result1)
 		if err != nil {
 			t.Errorf("expected no error, got %v", err)
 		}
-		if len(result1.([]map[string]any)) != 1 {
+		if len(result1) != 1 {
 			t.Error("first call should return 1 result")
 		}
 
 		// Second call returns error
-		_, err = mock.Find(context.Background(), "testdb", "users", map[string]any{})
+		var result2 []map[string]any
+		err = mock.Find(context.Background(), "testdb", "users", map[string]any{}).All(&result2)
 		if err == nil || err.Error() != "connection timeout" {
 			t.Errorf("expected 'connection timeout' error, got %v", err)
 		}
 
 		// Third call succeeds again
-		result3, err := mock.Find(context.Background(), "testdb", "users", map[string]any{})
+		var result3 []map[string]any
+		err = mock.Find(context.Background(), "testdb", "users", map[string]any{}).All(&result3)
 		if err != nil {
 			t.Errorf("expected no error, got %v", err)
 		}
-		if len(result3.([]map[string]any)) != 1 {
+		if len(result3) != 1 {
 			t.Error("third call should return 1 result")
 		}
 	})

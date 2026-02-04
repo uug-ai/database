@@ -310,15 +310,10 @@ func TestFindIntegration(t *testing.T) {
 
 	// Test Find with username filter
 	filter := map[string]any{"username": "cedricve"}
-	results, err := db.Client.Find(ctx, "Kerberos", "users", filter)
+	var resultSlice []any
+	err = db.Client.Find(ctx, "Kerberos", "users", filter).All(&resultSlice)
 	if err != nil {
 		t.Fatalf("Find failed: %v", err)
-	}
-
-	// Validate results
-	resultSlice, ok := results.([]any)
-	if !ok {
-		t.Fatalf("expected results to be []any, got %T", results)
 	}
 
 	if len(resultSlice) != 1 {
