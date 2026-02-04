@@ -225,8 +225,35 @@ func (m *MongoClient) GetTimeout() time.Duration {
 	return time.Duration(m.Options.Timeout) * time.Millisecond
 }
 
-// Find executes a find query on the specified database and collection
-func (m *MongoClient) Find(ctx context.Context, db string, collection string, filter any, opts ...any) (any, error) {
+// FindResult wraps a MongoDB cursor for fluent API usage
+type FindResult struct {
+	cursor *mongo.Cursor
+	ctx    context.Context
+	err    error
+}
+
+// All decodes all results into the provided destination slice.
+// The dest parameter must be a pointer to a slice.
+func (fr *FindResult) All(dest any) error {
+	if fr.err != nil {
+		return fr.err
+	}
+	if fr.cursor == nil {
+		return fr.err
+	}
+	defer fr.cursor.Close(fr.ctx)
+	return fr.cursor.All(fr.ctx, dest)
+}
+
+// Err returns any error that occurred during the query.
+func (fr *FindResult) Err() error {
+	return fr.err
+}
+
+// Find executes a find query on the specified database and collection.
+// Returns a FindResult that can be used with .All() for fluent decoding.
+// Supports *moptions.FindOptions and *Projection in opts.
+func (m *MongoClient) Find(ctx context.Context, db string, collection string, filter any, opts ...any) FindResultInterface {
 	coll := m.Client.Database(db).Collection(collection)
 
 	// Convert opts to mongo.FindOptions if provided
@@ -234,21 +261,14 @@ func (m *MongoClient) Find(ctx context.Context, db string, collection string, fi
 	for _, opt := range opts {
 		if fo, ok := opt.(*moptions.FindOptions); ok {
 			findOpts = append(findOpts, fo)
+		} else if proj, ok := opt.(*Projection); ok {
+			// Convert Projection to FindOptions with SetProjection
+			findOpts = append(findOpts, moptions.Find().SetProjection(proj.toBSON()))
 		}
 	}
 
 	cursor, err := coll.Find(ctx, filter, findOpts...)
-	if err != nil {
-		return nil, err
-	}
-	defer cursor.Close(ctx)
-
-	var results []any
-	if err = cursor.All(ctx, &results); err != nil {
-		return nil, err
-	}
-
-	return results, nil
+	return &FindResult{cursor: cursor, ctx: ctx, err: err}
 }
 
 // FindOne executes a findOne query on the specified database and collection.

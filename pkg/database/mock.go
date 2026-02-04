@@ -2,6 +2,7 @@ package database
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"time"
 
@@ -13,8 +14,8 @@ type MockDatabase struct {
 	// PingFunc allows customizing Ping behavior
 	PingFunc func(ctx context.Context) error
 
-	// FindFunc allows customizing Find behavior
-	FindFunc func(ctx context.Context, db string, collection string, filter any, opts ...any) (any, error)
+	// FindFunc allows customizing Find behavior - returns a FindResultInterface
+	FindFunc func(ctx context.Context, db string, collection string, filter any, opts ...any) FindResultInterface
 
 	// FindOneFunc allows customizing FindOne behavior - returns a SingleResultInterface
 	FindOneFunc func(ctx context.Context, db string, collection string, filter any, opts ...any) SingleResultInterface
@@ -47,6 +48,28 @@ type MockUpdateResult struct {
 	modifiedCount int64
 	upsertedCount int64
 	upsertedID    any
+}
+
+// MockFindResult implements FindResultInterface for testing
+type MockFindResult struct {
+	results any
+	err     error
+}
+
+// All decodes all results into dest
+func (m *MockFindResult) All(dest any) error {
+	if m.err != nil {
+		return m.err
+	}
+	if m.results == nil {
+		return nil
+	}
+	return copySliceResult(m.results, dest)
+}
+
+// Err returns any error
+func (m *MockFindResult) Err() error {
+	return m.err
 }
 
 // MatchedCount returns the number of documents matched
@@ -155,8 +178,8 @@ func NewMockDatabase() *MockDatabase {
 		PingFunc: func(ctx context.Context) error {
 			return nil
 		},
-		FindFunc: func(ctx context.Context, db string, collection string, filter any, opts ...any) (any, error) {
-			return []any{}, nil
+		FindFunc: func(ctx context.Context, db string, collection string, filter any, opts ...any) FindResultInterface {
+			return &MockFindResult{results: []any{}, err: nil}
 		},
 		FindOneFunc: func(ctx context.Context, db string, collection string, filter any, opts ...any) SingleResultInterface {
 			return &MockSingleResult{result: nil, err: fmt.Errorf("no document found")}
@@ -204,7 +227,7 @@ func (m *MockDatabase) GetTimeout() time.Duration {
 }
 
 // Find implements DatabaseInterface
-func (m *MockDatabase) Find(ctx context.Context, db string, collection string, filter any, opts ...any) (any, error) {
+func (m *MockDatabase) Find(ctx context.Context, db string, collection string, filter any, opts ...any) FindResultInterface {
 	m.FindCalls = append(m.FindCalls, FindCall{
 		Ctx:        ctx,
 		Db:         db,
@@ -213,18 +236,34 @@ func (m *MockDatabase) Find(ctx context.Context, db string, collection string, f
 		Opts:       opts,
 	})
 
+	var result any
+	var err error
+
 	// Check if there's a queued response
 	if len(m.FindQueue) > 0 {
 		response := m.FindQueue[0]
 		m.FindQueue = m.FindQueue[1:]
-		return response.Result, response.Err
+		result = response.Result
+		err = response.Err
+	} else if m.FindFunc != nil {
+		// Fall back to FindFunc
+		return m.FindFunc(ctx, db, collection, filter, opts...)
+	} else {
+		result = []any{}
+		err = nil
 	}
 
-	// Fall back to FindFunc
-	if m.FindFunc != nil {
-		return m.FindFunc(ctx, db, collection, filter, opts...)
+	// Apply projection if present
+	if result != nil && err == nil {
+		for _, opt := range opts {
+			if proj, ok := opt.(*Projection); ok {
+				result = applyProjectionToSlice(result, proj)
+				break
+			}
+		}
 	}
-	return []any{}, nil
+
+	return &MockFindResult{results: result, err: err}
 }
 
 // FindOne implements DatabaseInterface
@@ -277,6 +316,17 @@ func copyResult(src any, dest any) error {
 	return bson.Unmarshal(bytes, dest)
 }
 
+// copySliceResult copies a slice from src into dest using JSON marshaling
+// This is simpler than BSON for arrays at the top level
+func copySliceResult(src any, dest any) error {
+	// Use standard JSON which handles arrays at top level correctly
+	bytes, err := json.Marshal(src)
+	if err != nil {
+		return err
+	}
+	return json.Unmarshal(bytes, dest)
+}
+
 // applyProjection filters fields from a result based on projection rules
 func applyProjection(result any, proj *Projection) any {
 	if proj == nil || len(proj.fields) == 0 {
@@ -325,6 +375,25 @@ func applyProjection(result any, proj *Projection) any {
 	}
 
 	return result
+}
+
+// applyProjectionToSlice applies projection to a slice of results
+func applyProjectionToSlice(results any, proj *Projection) any {
+	if proj == nil || len(proj.fields) == 0 {
+		return results
+	}
+
+	// Try to convert to slice
+	slice, ok := results.([]any)
+	if !ok {
+		return results
+	}
+
+	projected := make([]any, len(slice))
+	for i, item := range slice {
+		projected[i] = applyProjection(item, proj)
+	}
+	return projected
 }
 
 // UpdateOne implements DatabaseInterface
@@ -392,8 +461,8 @@ func (m *MockDatabase) ExpectPing(err error) *MockDatabase {
 
 // ExpectFind sets up an expectation for Find
 func (m *MockDatabase) ExpectFind(result any, err error) *MockDatabase {
-	m.FindFunc = func(ctx context.Context, db string, collection string, filter any, opts ...any) (any, error) {
-		return result, err
+	m.FindFunc = func(ctx context.Context, db string, collection string, filter any, opts ...any) FindResultInterface {
+		return &MockFindResult{results: result, err: err}
 	}
 	return m
 }
