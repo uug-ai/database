@@ -368,6 +368,21 @@ func (ur *UpdateResult) UpsertedID() any {
 	return ur.result.UpsertedID
 }
 
+// Count returns the number of documents in the specified database and collection matching the filter.
+// Supports *moptions.CountOptions in opts.
+func (m *MongoClient) Count(ctx context.Context, db string, collection string, filter any, opts ...any) (int64, error) {
+	coll := m.Client.Database(db).Collection(collection)
+
+	var countOpts []*moptions.CountOptions
+	for _, opt := range opts {
+		if co, ok := opt.(*moptions.CountOptions); ok {
+			countOpts = append(countOpts, co)
+		}
+	}
+
+	return coll.CountDocuments(ctx, filter, countOpts...)
+}
+
 // UpdateOne executes an update query on a single document in the specified database and collection.
 // Returns an UpdateResult that provides access to matched, modified, and upserted counts.
 // Supports *moptions.UpdateOptions in opts.

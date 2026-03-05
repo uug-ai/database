@@ -35,6 +35,7 @@ type DatabaseInterface interface {
 	Find(ctx context.Context, db string, collection string, filter any, opts ...any) FindResultInterface
 	FindOne(ctx context.Context, db string, collection string, filter any, opts ...any) SingleResultInterface
 	UpdateOne(ctx context.Context, db string, collection string, filter any, update any, opts ...any) (UpdateResultInterface, error)
+	Count(ctx context.Context, db string, collection string, filter any, opts ...any) (int64, error)
 	Disconnect(ctx context.Context) error
 	InsertOne(ctx context.Context, db string, collection string, document any, opts ...any) (any, error)
 	InsertMany(ctx context.Context, db string, collection string, documents []any, opts ...any) (any, error)

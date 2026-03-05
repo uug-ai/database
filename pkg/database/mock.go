@@ -23,17 +23,22 @@ type MockDatabase struct {
 	// UpdateOneFunc allows customizing UpdateOne behavior
 	UpdateOneFunc func(ctx context.Context, db string, collection string, filter any, update any, opts ...any) (UpdateResultInterface, error)
 
+	// CountFunc allows customizing Count behavior
+	CountFunc func(ctx context.Context, db string, collection string, filter any, opts ...any) (int64, error)
+
 	// Sequential response queues for multiple calls
 	PingQueue      []PingResponse
 	FindQueue      []FindResponse
 	FindOneQueue   []FindOneResponse
 	UpdateOneQueue []UpdateOneResponse
+	CountQueue     []CountResponse
 
 	// Call tracking
 	PingCalls      []PingCall
 	FindCalls      []FindCall
 	FindOneCalls   []FindOneCall
 	UpdateOneCalls []UpdateOneCall
+	CountCalls     []CountCall
 }
 
 // MockSingleResult implements SingleResultInterface for testing
@@ -172,6 +177,21 @@ type UpdateOneCall struct {
 	Opts       []any
 }
 
+// CountResponse represents a queued response for Count
+type CountResponse struct {
+	Count int64
+	Err   error
+}
+
+// CountCall records a call to Count
+type CountCall struct {
+	Ctx        context.Context
+	Db         string
+	Collection string
+	Filter     any
+	Opts       []any
+}
+
 // NewMockDatabase creates a new MockDatabase with sensible defaults
 func NewMockDatabase() *MockDatabase {
 	return &MockDatabase{
@@ -187,14 +207,19 @@ func NewMockDatabase() *MockDatabase {
 		UpdateOneFunc: func(ctx context.Context, db string, collection string, filter any, update any, opts ...any) (UpdateResultInterface, error) {
 			return &MockUpdateResult{matchedCount: 1, modifiedCount: 1}, nil
 		},
+		CountFunc: func(ctx context.Context, db string, collection string, filter any, opts ...any) (int64, error) {
+			return 0, nil
+		},
 		PingCalls:      []PingCall{},
 		FindCalls:      []FindCall{},
 		FindOneCalls:   []FindOneCall{},
 		UpdateOneCalls: []UpdateOneCall{},
+		CountCalls:     []CountCall{},
 		PingQueue:      []PingResponse{},
 		FindQueue:      []FindResponse{},
 		FindOneQueue:   []FindOneResponse{},
 		UpdateOneQueue: []UpdateOneResponse{},
+		CountQueue:     []CountResponse{},
 	}
 }
 
@@ -429,6 +454,30 @@ func (m *MockDatabase) UpdateOne(ctx context.Context, db string, collection stri
 	return &MockUpdateResult{matchedCount: 1, modifiedCount: 1}, nil
 }
 
+// Count implements DatabaseInterface
+func (m *MockDatabase) Count(ctx context.Context, db string, collection string, filter any, opts ...any) (int64, error) {
+	m.CountCalls = append(m.CountCalls, CountCall{
+		Ctx:        ctx,
+		Db:         db,
+		Collection: collection,
+		Filter:     filter,
+		Opts:       opts,
+	})
+
+	// Check if there's a queued response
+	if len(m.CountQueue) > 0 {
+		response := m.CountQueue[0]
+		m.CountQueue = m.CountQueue[1:]
+		return response.Count, response.Err
+	}
+
+	// Fall back to CountFunc
+	if m.CountFunc != nil {
+		return m.CountFunc(ctx, db, collection, filter, opts...)
+	}
+	return 0, nil
+}
+
 // InsertOne implements DatabaseInterface
 func (m *MockDatabase) InsertOne(ctx context.Context, db string, collection string, document any, opts ...any) (any, error) {
 	return nil, fmt.Errorf("InsertOne not implemented in MockDatabase")
@@ -445,10 +494,12 @@ func (m *MockDatabase) Reset() {
 	m.FindCalls = []FindCall{}
 	m.FindOneCalls = []FindOneCall{}
 	m.UpdateOneCalls = []UpdateOneCall{}
+	m.CountCalls = []CountCall{}
 	m.PingQueue = []PingResponse{}
 	m.FindQueue = []FindResponse{}
 	m.FindOneQueue = []FindOneResponse{}
 	m.UpdateOneQueue = []UpdateOneResponse{}
+	m.CountQueue = []CountResponse{}
 }
 
 // ExpectPing sets up an expectation for Ping
@@ -518,5 +569,19 @@ func (m *MockDatabase) QueueUpdateOne(matchedCount, modifiedCount, upsertedCount
 		UpsertedID:    upsertedID,
 		Err:           err,
 	})
+	return m
+}
+
+// ExpectCount sets up an expectation for Count
+func (m *MockDatabase) ExpectCount(count int64, err error) *MockDatabase {
+	m.CountFunc = func(ctx context.Context, db string, collection string, filter any, opts ...any) (int64, error) {
+		return count, err
+	}
+	return m
+}
+
+// QueueCount adds a Count response to the queue for sequential calls
+func (m *MockDatabase) QueueCount(count int64, err error) *MockDatabase {
+	m.CountQueue = append(m.CountQueue, CountResponse{Count: count, Err: err})
 	return m
 }
