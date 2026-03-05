@@ -376,5 +376,160 @@ func TestMockDatabaseSequentialCalls(t *testing.T) {
 		if len(mock.FindOneQueue) != 0 {
 			t.Error("FindOneQueue should be empty after Reset")
 		}
+		if len(mock.CountQueue) != 0 {
+			t.Error("CountQueue should be empty after Reset")
+		}
+	})
+}
+
+func TestMockDatabaseCount(t *testing.T) {
+	t.Run("DefaultBehavior", func(t *testing.T) {
+		mock := NewMockDatabase()
+
+		count, err := mock.Count(context.Background(), "testdb", "users", map[string]any{})
+		if err != nil {
+			t.Errorf("expected nil error, got %v", err)
+		}
+		if count != 0 {
+			t.Errorf("expected count 0, got %d", count)
+		}
+
+		// Verify call tracking
+		if len(mock.CountCalls) != 1 {
+			t.Errorf("expected 1 count call, got %d", len(mock.CountCalls))
+		}
+		if mock.CountCalls[0].Db != "testdb" {
+			t.Errorf("expected db 'testdb', got '%s'", mock.CountCalls[0].Db)
+		}
+		if mock.CountCalls[0].Collection != "users" {
+			t.Errorf("expected collection 'users', got '%s'", mock.CountCalls[0].Collection)
+		}
+	})
+
+	t.Run("ExpectCount", func(t *testing.T) {
+		mock := NewMockDatabase()
+		mock.ExpectCount(42, nil)
+
+		count, err := mock.Count(context.Background(), "testdb", "users", map[string]any{"status": "active"})
+		if err != nil {
+			t.Errorf("expected nil error, got %v", err)
+		}
+		if count != 42 {
+			t.Errorf("expected count 42, got %d", count)
+		}
+	})
+
+	t.Run("ExpectCountWithError", func(t *testing.T) {
+		mock := NewMockDatabase()
+		expectedErr := fmt.Errorf("connection failed")
+		mock.ExpectCount(0, expectedErr)
+
+		count, err := mock.Count(context.Background(), "testdb", "users", map[string]any{})
+		if err != expectedErr {
+			t.Errorf("expected error '%v', got '%v'", expectedErr, err)
+		}
+		if count != 0 {
+			t.Errorf("expected count 0, got %d", count)
+		}
+	})
+
+	t.Run("QueueMultipleCounts", func(t *testing.T) {
+		mock := NewMockDatabase()
+
+		mock.QueueCount(10, nil).
+			QueueCount(0, fmt.Errorf("timeout")).
+			QueueCount(25, nil)
+
+		// First call
+		count, err := mock.Count(context.Background(), "testdb", "users", map[string]any{})
+		if err != nil {
+			t.Errorf("expected nil error, got %v", err)
+		}
+		if count != 10 {
+			t.Errorf("expected count 10, got %d", count)
+		}
+
+		// Second call returns error
+		count, err = mock.Count(context.Background(), "testdb", "users", map[string]any{})
+		if err == nil || err.Error() != "timeout" {
+			t.Errorf("expected 'timeout' error, got %v", err)
+		}
+		if count != 0 {
+			t.Errorf("expected count 0, got %d", count)
+		}
+
+		// Third call succeeds
+		count, err = mock.Count(context.Background(), "testdb", "orders", map[string]any{})
+		if err != nil {
+			t.Errorf("expected nil error, got %v", err)
+		}
+		if count != 25 {
+			t.Errorf("expected count 25, got %d", count)
+		}
+
+		// Fourth call falls back to default
+		count, err = mock.Count(context.Background(), "testdb", "other", map[string]any{})
+		if err != nil {
+			t.Errorf("expected nil error, got %v", err)
+		}
+		if count != 0 {
+			t.Errorf("expected count 0 (default), got %d", count)
+		}
+
+		// Verify all calls tracked
+		if len(mock.CountCalls) != 4 {
+			t.Errorf("expected 4 count calls, got %d", len(mock.CountCalls))
+		}
+	})
+
+	t.Run("CustomCountFunc", func(t *testing.T) {
+		mock := NewMockDatabase()
+
+		mock.CountFunc = func(ctx context.Context, db string, collection string, filter any, opts ...any) (int64, error) {
+			if collection == "users" {
+				return 100, nil
+			}
+			return 0, fmt.Errorf("unknown collection")
+		}
+
+		count, err := mock.Count(context.Background(), "testdb", "users", map[string]any{})
+		if err != nil {
+			t.Errorf("expected nil error, got %v", err)
+		}
+		if count != 100 {
+			t.Errorf("expected count 100, got %d", count)
+		}
+
+		count, err = mock.Count(context.Background(), "testdb", "unknown", map[string]any{})
+		if err == nil {
+			t.Error("expected error for unknown collection")
+		}
+		if count != 0 {
+			t.Errorf("expected count 0, got %d", count)
+		}
+
+		if len(mock.CountCalls) != 2 {
+			t.Errorf("expected 2 count calls, got %d", len(mock.CountCalls))
+		}
+	})
+
+	t.Run("ResetClearsCountState", func(t *testing.T) {
+		mock := NewMockDatabase()
+
+		mock.QueueCount(5, nil)
+		mock.Count(context.Background(), "testdb", "users", map[string]any{})
+
+		if len(mock.CountCalls) != 1 {
+			t.Error("expected count call to be tracked")
+		}
+
+		mock.Reset()
+
+		if len(mock.CountCalls) != 0 {
+			t.Error("expected count calls to be cleared after reset")
+		}
+		if len(mock.CountQueue) != 0 {
+			t.Error("expected count queue to be cleared after reset")
+		}
 	})
 }
