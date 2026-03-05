@@ -29,12 +29,20 @@ jobs:
           --build-arg github_username=${{ secrets.USERNAME }} \
           --build-arg github_token=${{ secrets.TOKEN }} .
 
-      # Install Trivy manually to avoid rate-limited install script in trivy-action
+      # Install Trivy binary directly to avoid rate-limited install script
       - name: Install Trivy
-        uses: aquasecurity/setup-trivy@v0.2.3
-        with:
-          version: v0.62.1
-          cache: true
+        env:
+          TRIVY_VERSION: "0.62.1"
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p $HOME/.local/bin
+          curl -fsSL -H "Authorization: token ${GH_TOKEN}" \
+            "https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}/trivy_${TRIVY_VERSION}_Linux-64bit.tar.gz" \
+            -o /tmp/trivy.tar.gz
+          tar -xzf /tmp/trivy.tar.gz -C $HOME/.local/bin trivy
+          chmod +x $HOME/.local/bin/trivy
+          echo "$HOME/.local/bin" >> $GITHUB_PATH
+          trivy --version
 
       # This is a workaround for the issue with the Trivy DBs not being available due to
       # rate limiting. The workaround is to download the DBs and cache them.
