@@ -2,7 +2,7 @@
 
 Universal MongoDB database driver for Go with built-in observability and functional options pattern.
 
-[![Go Version](https://img.shields.io/badge/Go-1.24-blue.svg)](https://go.dev/)
+[![Go Version](https://img.shields.io/badge/Go-1.25-blue.svg)](https://go.dev/)
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 [![GoDoc](https://godoc.org/github.com/uug-ai/database?status.svg)](https://godoc.org/github.com/uug-ai/database)
 [![Go Report Card](https://goreportcard.com/badge/github.com/uug-ai/database)](https://goreportcard.com/report/github.com/uug-ai/database)
@@ -622,6 +622,42 @@ The `MockDatabase` type provides:
 2. Custom function handlers (Func properties)
 3. Default behavior - fallback
 
+## CI Workflows
+
+This repository keeps thin GitHub Actions wrapper workflows in `.github/workflows` and reuses the shared workflow implementations from [`uug-ai/workflows`](https://github.com/uug-ai/workflows).
+
+Current wrappers:
+
+- `pr-build.yml` - pull request build and Go test pipeline
+- `test-coverage.yaml` - test coverage and Codecov upload
+- `security-scan.yml` - container vulnerability scanning with Trivy
+- `pr-description.yml` - automatic pull request description generation
+- `issue-userstory-create.yml` - manual user story issue creation
+- `release-create.yml` - release image build and manifest publishing
+
+The wrapper files in this repository only define repository-specific triggers and inputs. The shared repository owns the reusable job logic.
+
+### Release Behavior
+
+The release workflow calls the shared `release-create.yml` workflow with `create_gitops_pr: false`.
+
+That means release automation for this repository:
+
+- builds and publishes the container images
+- creates the multi-architecture manifests
+- does not open a GitOps pull request
+
+### Required Secrets
+
+These workflows use `secrets: inherit`, so the repository must provide the secrets expected by the shared workflows, including where relevant:
+
+- `USERNAME`
+- `TOKEN`
+- `CODECOV_TOKEN`
+- `AZURE_OPENAI_API_KEY`
+
+Azure OpenAI endpoint and version values can be supplied through repository variables used by the shared workflows.
+
 ## OpenTelemetry Integration
 
 This package includes built-in OpenTelemetry instrumentation for MongoDB operations:
@@ -755,8 +791,3 @@ opts := database.NewMongoOptions().
 db, err := database.New(opts)
 ```
 
-## Support
-
-- **Issues**: [GitHub Issues](https://github.com/uug-ai/database/issues)
-- **Discussions**: [GitHub Discussions](https://github.com/uug-ai/database/discussions)
-- **Documentation**: See inline code comments and examples above
