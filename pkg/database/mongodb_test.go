@@ -10,6 +10,15 @@ import (
 	"go.mongodb.org/mongo-driver/bson"
 )
 
+func envVarsSet(keys ...string) bool {
+	for _, key := range keys {
+		if os.Getenv(key) == "" {
+			return false
+		}
+	}
+	return true
+}
+
 // TestMongoOptionsValidation tests the validation of MongoDB options
 func TestMongoOptionsValidation(t *testing.T) {
 	tests := []struct {
@@ -265,6 +274,17 @@ func TestMongodbLiveIntegration(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			switch tt.name {
+			case "UriIntegrationTest":
+				if !envVarsSet("MONGODB_URI") {
+					t.Skip("MONGODB_URI not set, skipping integration test")
+				}
+			case "ComponentsIntegrationTest":
+				if !envVarsSet("MONGODB_HOST", "MONGODB_DATABASE_CREDENTIALS", "MONGODB_USERNAME", "MONGODB_PASSWORD") {
+					t.Skip("MongoDB component environment variables not set, skipping integration test")
+				}
+			}
+
 			opts := tt.buildOpts()
 			db, err := New(opts)
 			if err != nil {
