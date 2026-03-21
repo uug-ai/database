@@ -14,7 +14,7 @@ env:
   PR_NUMBER: ${{ github.event.number }}
   SHA: ${{ github.sha }}
   
-  GO_VERSION: 1.24
+  GO_VERSION: 1.25.8
 
 jobs:
   test-coverage:

@@ -8,7 +8,7 @@ env:
   # Build variables
   ORGANIZATION: uug-ai
   PROJECT: ${{ github.event.repository.name }}
-  GO_VERSION: "1.24"
+  GO_VERSION: "1.25.8"
   GO_DIR : "./"
 
 jobs:
