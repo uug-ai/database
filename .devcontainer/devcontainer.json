@@ -1,7 +1,7 @@
 // For format details, see https://aka.ms/devcontainer.json. For config options, see the
 // README at: https://github.com/devcontainers/templates/tree/main/src/python
 {
-	"name": "go:1.25-bookworm",
+	"name": "go:1.25.8-bookworm",
 	"runArgs": [
 		"--name=database",
 		"--network=host"
