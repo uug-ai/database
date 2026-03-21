@@ -790,3 +790,4 @@ opts := database.NewMongoOptions().
 
 db, err := database.New(opts)
 ```
+
