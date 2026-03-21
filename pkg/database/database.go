@@ -29,12 +29,19 @@ type UpdateResultInterface interface {
 	UpsertedID() any
 }
 
+// DeleteResultInterface defines the interface for delete operation results
+type DeleteResultInterface interface {
+	DeletedCount() int64
+}
+
 type DatabaseInterface interface {
 	GetTimeout() time.Duration
 	Ping(context.Context) error
 	Find(ctx context.Context, db string, collection string, filter any, opts ...any) FindResultInterface
 	FindOne(ctx context.Context, db string, collection string, filter any, opts ...any) SingleResultInterface
 	UpdateOne(ctx context.Context, db string, collection string, filter any, update any, opts ...any) (UpdateResultInterface, error)
+	DeleteOne(ctx context.Context, db string, collection string, filter any, opts ...any) (DeleteResultInterface, error)
+	DeleteMany(ctx context.Context, db string, collection string, filter any, opts ...any) (DeleteResultInterface, error)
 	Count(ctx context.Context, db string, collection string, filter any, opts ...any) (int64, error)
 	Disconnect(ctx context.Context) error
 	InsertOne(ctx context.Context, db string, collection string, document any, opts ...any) (any, error)

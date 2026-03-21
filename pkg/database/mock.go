@@ -23,22 +23,32 @@ type MockDatabase struct {
 	// UpdateOneFunc allows customizing UpdateOne behavior
 	UpdateOneFunc func(ctx context.Context, db string, collection string, filter any, update any, opts ...any) (UpdateResultInterface, error)
 
+	// DeleteOneFunc allows customizing DeleteOne behavior
+	DeleteOneFunc func(ctx context.Context, db string, collection string, filter any, opts ...any) (DeleteResultInterface, error)
+
+	// DeleteManyFunc allows customizing DeleteMany behavior
+	DeleteManyFunc func(ctx context.Context, db string, collection string, filter any, opts ...any) (DeleteResultInterface, error)
+
 	// CountFunc allows customizing Count behavior
 	CountFunc func(ctx context.Context, db string, collection string, filter any, opts ...any) (int64, error)
 
 	// Sequential response queues for multiple calls
-	PingQueue      []PingResponse
-	FindQueue      []FindResponse
-	FindOneQueue   []FindOneResponse
-	UpdateOneQueue []UpdateOneResponse
-	CountQueue     []CountResponse
+	PingQueue       []PingResponse
+	FindQueue       []FindResponse
+	FindOneQueue    []FindOneResponse
+	UpdateOneQueue  []UpdateOneResponse
+	DeleteOneQueue  []DeleteResponse
+	DeleteManyQueue []DeleteResponse
+	CountQueue      []CountResponse
 
 	// Call tracking
-	PingCalls      []PingCall
-	FindCalls      []FindCall
-	FindOneCalls   []FindOneCall
-	UpdateOneCalls []UpdateOneCall
-	CountCalls     []CountCall
+	PingCalls       []PingCall
+	FindCalls       []FindCall
+	FindOneCalls    []FindOneCall
+	UpdateOneCalls  []UpdateOneCall
+	DeleteOneCalls  []DeleteCall
+	DeleteManyCalls []DeleteCall
+	CountCalls      []CountCall
 }
 
 // MockSingleResult implements SingleResultInterface for testing
@@ -53,6 +63,11 @@ type MockUpdateResult struct {
 	modifiedCount int64
 	upsertedCount int64
 	upsertedID    any
+}
+
+// MockDeleteResult implements DeleteResultInterface for testing
+type MockDeleteResult struct {
+	deletedCount int64
 }
 
 // MockFindResult implements FindResultInterface for testing
@@ -95,6 +110,11 @@ func (m *MockUpdateResult) UpsertedCount() int64 {
 // UpsertedID returns the ID of the upserted document
 func (m *MockUpdateResult) UpsertedID() any {
 	return m.upsertedID
+}
+
+// DeletedCount returns the number of documents deleted
+func (m *MockDeleteResult) DeletedCount() int64 {
+	return m.deletedCount
 }
 
 // Into decodes the result into dest
@@ -144,6 +164,12 @@ type UpdateOneResponse struct {
 	Err           error
 }
 
+// DeleteResponse represents a queued response for delete operations
+type DeleteResponse struct {
+	DeletedCount int64
+	Err          error
+}
+
 // PingCall records a call to Ping
 type PingCall struct {
 	Ctx context.Context
@@ -177,6 +203,15 @@ type UpdateOneCall struct {
 	Opts       []any
 }
 
+// DeleteCall records a call to DeleteOne or DeleteMany
+type DeleteCall struct {
+	Ctx        context.Context
+	Db         string
+	Collection string
+	Filter     any
+	Opts       []any
+}
+
 // CountResponse represents a queued response for Count
 type CountResponse struct {
 	Count int64
@@ -207,19 +242,29 @@ func NewMockDatabase() *MockDatabase {
 		UpdateOneFunc: func(ctx context.Context, db string, collection string, filter any, update any, opts ...any) (UpdateResultInterface, error) {
 			return &MockUpdateResult{matchedCount: 1, modifiedCount: 1}, nil
 		},
+		DeleteOneFunc: func(ctx context.Context, db string, collection string, filter any, opts ...any) (DeleteResultInterface, error) {
+			return &MockDeleteResult{deletedCount: 1}, nil
+		},
+		DeleteManyFunc: func(ctx context.Context, db string, collection string, filter any, opts ...any) (DeleteResultInterface, error) {
+			return &MockDeleteResult{deletedCount: 0}, nil
+		},
 		CountFunc: func(ctx context.Context, db string, collection string, filter any, opts ...any) (int64, error) {
 			return 0, nil
 		},
-		PingCalls:      []PingCall{},
-		FindCalls:      []FindCall{},
-		FindOneCalls:   []FindOneCall{},
-		UpdateOneCalls: []UpdateOneCall{},
-		CountCalls:     []CountCall{},
-		PingQueue:      []PingResponse{},
-		FindQueue:      []FindResponse{},
-		FindOneQueue:   []FindOneResponse{},
-		UpdateOneQueue: []UpdateOneResponse{},
-		CountQueue:     []CountResponse{},
+		PingCalls:       []PingCall{},
+		FindCalls:       []FindCall{},
+		FindOneCalls:    []FindOneCall{},
+		UpdateOneCalls:  []UpdateOneCall{},
+		DeleteOneCalls:  []DeleteCall{},
+		DeleteManyCalls: []DeleteCall{},
+		CountCalls:      []CountCall{},
+		PingQueue:       []PingResponse{},
+		FindQueue:       []FindResponse{},
+		FindOneQueue:    []FindOneResponse{},
+		UpdateOneQueue:  []UpdateOneResponse{},
+		DeleteOneQueue:  []DeleteResponse{},
+		DeleteManyQueue: []DeleteResponse{},
+		CountQueue:      []CountResponse{},
 	}
 }
 
@@ -454,6 +499,58 @@ func (m *MockDatabase) UpdateOne(ctx context.Context, db string, collection stri
 	return &MockUpdateResult{matchedCount: 1, modifiedCount: 1}, nil
 }
 
+// DeleteOne implements DatabaseInterface
+func (m *MockDatabase) DeleteOne(ctx context.Context, db string, collection string, filter any, opts ...any) (DeleteResultInterface, error) {
+	m.DeleteOneCalls = append(m.DeleteOneCalls, DeleteCall{
+		Ctx:        ctx,
+		Db:         db,
+		Collection: collection,
+		Filter:     filter,
+		Opts:       opts,
+	})
+
+	if len(m.DeleteOneQueue) > 0 {
+		response := m.DeleteOneQueue[0]
+		m.DeleteOneQueue = m.DeleteOneQueue[1:]
+		if response.Err != nil {
+			return nil, response.Err
+		}
+		return &MockDeleteResult{deletedCount: response.DeletedCount}, nil
+	}
+
+	if m.DeleteOneFunc != nil {
+		return m.DeleteOneFunc(ctx, db, collection, filter, opts...)
+	}
+
+	return &MockDeleteResult{deletedCount: 1}, nil
+}
+
+// DeleteMany implements DatabaseInterface
+func (m *MockDatabase) DeleteMany(ctx context.Context, db string, collection string, filter any, opts ...any) (DeleteResultInterface, error) {
+	m.DeleteManyCalls = append(m.DeleteManyCalls, DeleteCall{
+		Ctx:        ctx,
+		Db:         db,
+		Collection: collection,
+		Filter:     filter,
+		Opts:       opts,
+	})
+
+	if len(m.DeleteManyQueue) > 0 {
+		response := m.DeleteManyQueue[0]
+		m.DeleteManyQueue = m.DeleteManyQueue[1:]
+		if response.Err != nil {
+			return nil, response.Err
+		}
+		return &MockDeleteResult{deletedCount: response.DeletedCount}, nil
+	}
+
+	if m.DeleteManyFunc != nil {
+		return m.DeleteManyFunc(ctx, db, collection, filter, opts...)
+	}
+
+	return &MockDeleteResult{deletedCount: 0}, nil
+}
+
 // Count implements DatabaseInterface
 func (m *MockDatabase) Count(ctx context.Context, db string, collection string, filter any, opts ...any) (int64, error) {
 	m.CountCalls = append(m.CountCalls, CountCall{
@@ -494,11 +591,15 @@ func (m *MockDatabase) Reset() {
 	m.FindCalls = []FindCall{}
 	m.FindOneCalls = []FindOneCall{}
 	m.UpdateOneCalls = []UpdateOneCall{}
+	m.DeleteOneCalls = []DeleteCall{}
+	m.DeleteManyCalls = []DeleteCall{}
 	m.CountCalls = []CountCall{}
 	m.PingQueue = []PingResponse{}
 	m.FindQueue = []FindResponse{}
 	m.FindOneQueue = []FindOneResponse{}
 	m.UpdateOneQueue = []UpdateOneResponse{}
+	m.DeleteOneQueue = []DeleteResponse{}
+	m.DeleteManyQueue = []DeleteResponse{}
 	m.CountQueue = []CountResponse{}
 }
 
@@ -542,6 +643,28 @@ func (m *MockDatabase) ExpectUpdateOne(matchedCount, modifiedCount, upsertedCoun
 	return m
 }
 
+// ExpectDeleteOne sets up an expectation for DeleteOne
+func (m *MockDatabase) ExpectDeleteOne(deletedCount int64, err error) *MockDatabase {
+	m.DeleteOneFunc = func(ctx context.Context, db string, collection string, filter any, opts ...any) (DeleteResultInterface, error) {
+		if err != nil {
+			return nil, err
+		}
+		return &MockDeleteResult{deletedCount: deletedCount}, nil
+	}
+	return m
+}
+
+// ExpectDeleteMany sets up an expectation for DeleteMany
+func (m *MockDatabase) ExpectDeleteMany(deletedCount int64, err error) *MockDatabase {
+	m.DeleteManyFunc = func(ctx context.Context, db string, collection string, filter any, opts ...any) (DeleteResultInterface, error) {
+		if err != nil {
+			return nil, err
+		}
+		return &MockDeleteResult{deletedCount: deletedCount}, nil
+	}
+	return m
+}
+
 // QueuePing adds a Ping response to the queue for sequential calls
 func (m *MockDatabase) QueuePing(err error) *MockDatabase {
 	m.PingQueue = append(m.PingQueue, PingResponse{Err: err})
@@ -569,6 +692,18 @@ func (m *MockDatabase) QueueUpdateOne(matchedCount, modifiedCount, upsertedCount
 		UpsertedID:    upsertedID,
 		Err:           err,
 	})
+	return m
+}
+
+// QueueDeleteOne adds a DeleteOne response to the queue for sequential calls
+func (m *MockDatabase) QueueDeleteOne(deletedCount int64, err error) *MockDatabase {
+	m.DeleteOneQueue = append(m.DeleteOneQueue, DeleteResponse{DeletedCount: deletedCount, Err: err})
+	return m
+}
+
+// QueueDeleteMany adds a DeleteMany response to the queue for sequential calls
+func (m *MockDatabase) QueueDeleteMany(deletedCount int64, err error) *MockDatabase {
+	m.DeleteManyQueue = append(m.DeleteManyQueue, DeleteResponse{DeletedCount: deletedCount, Err: err})
 	return m
 }
 

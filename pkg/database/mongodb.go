@@ -348,6 +348,11 @@ type UpdateResult struct {
 	result *mongo.UpdateResult
 }
 
+// DeleteResult wraps a MongoDB delete result for fluent API usage
+type DeleteResult struct {
+	result *mongo.DeleteResult
+}
+
 // MatchedCount returns the number of documents matched by the filter
 func (ur *UpdateResult) MatchedCount() int64 {
 	return ur.result.MatchedCount
@@ -366,6 +371,11 @@ func (ur *UpdateResult) UpsertedCount() int64 {
 // UpsertedID returns the _id of the upserted document, or nil if no upsert occurred
 func (ur *UpdateResult) UpsertedID() any {
 	return ur.result.UpsertedID
+}
+
+// DeletedCount returns the number of documents deleted by the operation
+func (dr *DeleteResult) DeletedCount() int64 {
+	return dr.result.DeletedCount
 }
 
 // Count returns the number of documents in the specified database and collection matching the filter.
@@ -403,4 +413,46 @@ func (m *MongoClient) UpdateOne(ctx context.Context, db string, collection strin
 	}
 
 	return &UpdateResult{result: result}, nil
+}
+
+// DeleteOne executes a delete query on a single document in the specified database and collection.
+// Returns a DeleteResult that provides access to the number of deleted documents.
+// Supports *moptions.DeleteOptions in opts.
+func (m *MongoClient) DeleteOne(ctx context.Context, db string, collection string, filter any, opts ...any) (DeleteResultInterface, error) {
+	coll := m.Client.Database(db).Collection(collection)
+
+	var deleteOpts []*moptions.DeleteOptions
+	for _, opt := range opts {
+		if do, ok := opt.(*moptions.DeleteOptions); ok {
+			deleteOpts = append(deleteOpts, do)
+		}
+	}
+
+	result, err := coll.DeleteOne(ctx, filter, deleteOpts...)
+	if err != nil {
+		return nil, err
+	}
+
+	return &DeleteResult{result: result}, nil
+}
+
+// DeleteMany executes a delete query on multiple documents in the specified database and collection.
+// Returns a DeleteResult that provides access to the number of deleted documents.
+// Supports *moptions.DeleteOptions in opts.
+func (m *MongoClient) DeleteMany(ctx context.Context, db string, collection string, filter any, opts ...any) (DeleteResultInterface, error) {
+	coll := m.Client.Database(db).Collection(collection)
+
+	var deleteOpts []*moptions.DeleteOptions
+	for _, opt := range opts {
+		if do, ok := opt.(*moptions.DeleteOptions); ok {
+			deleteOpts = append(deleteOpts, do)
+		}
+	}
+
+	result, err := coll.DeleteMany(ctx, filter, deleteOpts...)
+	if err != nil {
+		return nil, err
+	}
+
+	return &DeleteResult{result: result}, nil
 }
