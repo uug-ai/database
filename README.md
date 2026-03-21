@@ -790,9 +790,3 @@ opts := database.NewMongoOptions().
 
 db, err := database.New(opts)
 ```
-
-## Support
-
-- **Issues**: [GitHub Issues](https://github.com/uug-ai/database/issues)
-- **Discussions**: [GitHub Discussions](https://github.com/uug-ai/database/discussions)
-- **Documentation**: See inline code comments and examples above
