@@ -222,6 +222,35 @@ func TestMockDatabase(t *testing.T) {
 			t.Errorf("expected 1 ping call on mock, got %d", len(mock.PingCalls))
 		}
 	})
+
+	t.Run("ExpectDeleteOperations", func(t *testing.T) {
+		mock := NewMockDatabase()
+		mock.ExpectDeleteOne(1, nil)
+		mock.ExpectDeleteMany(3, nil)
+
+		deleteOneResult, err := mock.DeleteOne(context.Background(), "testdb", "users", map[string]any{"id": 1})
+		if err != nil {
+			t.Errorf("expected nil error, got %v", err)
+		}
+		if deleteOneResult.DeletedCount() != 1 {
+			t.Errorf("expected 1 deleted document, got %d", deleteOneResult.DeletedCount())
+		}
+
+		deleteManyResult, err := mock.DeleteMany(context.Background(), "testdb", "users", map[string]any{"inactive": true})
+		if err != nil {
+			t.Errorf("expected nil error, got %v", err)
+		}
+		if deleteManyResult.DeletedCount() != 3 {
+			t.Errorf("expected 3 deleted documents, got %d", deleteManyResult.DeletedCount())
+		}
+
+		if len(mock.DeleteOneCalls) != 1 {
+			t.Errorf("expected 1 deleteOne call, got %d", len(mock.DeleteOneCalls))
+		}
+		if len(mock.DeleteManyCalls) != 1 {
+			t.Errorf("expected 1 deleteMany call, got %d", len(mock.DeleteManyCalls))
+		}
+	})
 }
 
 func TestMockDatabaseSequentialCalls(t *testing.T) {
@@ -365,7 +394,9 @@ func TestMockDatabaseSequentialCalls(t *testing.T) {
 
 		// Queue responses
 		mock.QueueFind([]map[string]any{{"id": 1}}, nil).
-			QueueFindOne(map[string]any{"id": 1}, nil)
+			QueueFindOne(map[string]any{"id": 1}, nil).
+			QueueDeleteOne(1, nil).
+			QueueDeleteMany(2, nil)
 
 		// Reset should clear queues
 		mock.Reset()
@@ -376,8 +407,127 @@ func TestMockDatabaseSequentialCalls(t *testing.T) {
 		if len(mock.FindOneQueue) != 0 {
 			t.Error("FindOneQueue should be empty after Reset")
 		}
+		if len(mock.DeleteOneQueue) != 0 {
+			t.Error("DeleteOneQueue should be empty after Reset")
+		}
+		if len(mock.DeleteManyQueue) != 0 {
+			t.Error("DeleteManyQueue should be empty after Reset")
+		}
 		if len(mock.CountQueue) != 0 {
 			t.Error("CountQueue should be empty after Reset")
+		}
+	})
+}
+
+func TestMockDatabaseDelete(t *testing.T) {
+	t.Run("DefaultBehavior", func(t *testing.T) {
+		mock := NewMockDatabase()
+
+		deleteOneResult, err := mock.DeleteOne(context.Background(), "testdb", "users", map[string]any{"id": 1})
+		if err != nil {
+			t.Errorf("expected nil error, got %v", err)
+		}
+		if deleteOneResult.DeletedCount() != 1 {
+			t.Errorf("expected deleted count 1, got %d", deleteOneResult.DeletedCount())
+		}
+
+		deleteManyResult, err := mock.DeleteMany(context.Background(), "testdb", "users", map[string]any{"inactive": true})
+		if err != nil {
+			t.Errorf("expected nil error, got %v", err)
+		}
+		if deleteManyResult.DeletedCount() != 0 {
+			t.Errorf("expected deleted count 0, got %d", deleteManyResult.DeletedCount())
+		}
+	})
+
+	t.Run("ExpectDeleteOneWithError", func(t *testing.T) {
+		mock := NewMockDatabase()
+		expectedErr := fmt.Errorf("delete failed")
+		mock.ExpectDeleteOne(0, expectedErr)
+
+		result, err := mock.DeleteOne(context.Background(), "testdb", "users", map[string]any{"id": 1})
+		if err != expectedErr {
+			t.Errorf("expected error '%v', got '%v'", expectedErr, err)
+		}
+		if result != nil {
+			t.Error("expected nil result on error")
+		}
+	})
+
+	t.Run("QueueMultipleDeletes", func(t *testing.T) {
+		mock := NewMockDatabase()
+
+		mock.QueueDeleteOne(1, nil).
+			QueueDeleteOne(0, fmt.Errorf("timeout")).
+			QueueDeleteMany(4, nil).
+			QueueDeleteMany(0, fmt.Errorf("denied"))
+
+		result, err := mock.DeleteOne(context.Background(), "testdb", "users", map[string]any{"id": 1})
+		if err != nil {
+			t.Errorf("expected nil error, got %v", err)
+		}
+		if result.DeletedCount() != 1 {
+			t.Errorf("expected deleted count 1, got %d", result.DeletedCount())
+		}
+
+		result, err = mock.DeleteOne(context.Background(), "testdb", "users", map[string]any{"id": 2})
+		if err == nil || err.Error() != "timeout" {
+			t.Errorf("expected 'timeout' error, got %v", err)
+		}
+		if result != nil {
+			t.Error("expected nil result on queued error")
+		}
+
+		result, err = mock.DeleteMany(context.Background(), "testdb", "users", map[string]any{"inactive": true})
+		if err != nil {
+			t.Errorf("expected nil error, got %v", err)
+		}
+		if result.DeletedCount() != 4 {
+			t.Errorf("expected deleted count 4, got %d", result.DeletedCount())
+		}
+
+		result, err = mock.DeleteMany(context.Background(), "testdb", "users", map[string]any{"expired": true})
+		if err == nil || err.Error() != "denied" {
+			t.Errorf("expected 'denied' error, got %v", err)
+		}
+		if result != nil {
+			t.Error("expected nil result on queued error")
+		}
+
+		if len(mock.DeleteOneCalls) != 2 {
+			t.Errorf("expected 2 deleteOne calls, got %d", len(mock.DeleteOneCalls))
+		}
+		if len(mock.DeleteManyCalls) != 2 {
+			t.Errorf("expected 2 deleteMany calls, got %d", len(mock.DeleteManyCalls))
+		}
+	})
+
+	t.Run("ResetClearsDeleteState", func(t *testing.T) {
+		mock := NewMockDatabase()
+
+		mock.QueueDeleteOne(1, nil).
+			QueueDeleteMany(2, nil)
+
+		mock.DeleteOne(context.Background(), "testdb", "users", map[string]any{"id": 1})
+		mock.DeleteMany(context.Background(), "testdb", "users", map[string]any{"inactive": true})
+
+		if len(mock.DeleteOneCalls) != 1 || len(mock.DeleteManyCalls) != 1 {
+			t.Error("expected delete calls to be tracked")
+		}
+
+		mock.Reset()
+
+		if len(mock.DeleteOneCalls) != 0 {
+			t.Error("expected deleteOne calls to be cleared after reset")
+		}
+		if len(mock.DeleteManyCalls) != 0 {
+			t.Error("expected deleteMany calls to be cleared after reset")
+		}
+		if len(mock.DeleteOneQueue) != 0 {
+			t.Error("expected deleteOne queue to be cleared after reset")
+		}
+		if len(mock.DeleteManyQueue) != 0 {
+			t.Error("expected deleteMany queue to be cleared after reset")
 		}
 	})
 }

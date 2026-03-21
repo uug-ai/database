@@ -217,6 +217,24 @@ ids, err := db.Client.InsertMany(ctx, "mydb", "users", []any{
 })
 ```
 
+#### Delete Operations
+
+```go
+// Delete a single document
+deleteOneResult, err := db.Client.DeleteOne(ctx, "mydb", "users", map[string]any{"email": "bob@example.com"})
+if err != nil {
+    log.Fatal(err)
+}
+fmt.Printf("Deleted %d document\n", deleteOneResult.DeletedCount())
+
+// Delete multiple documents
+deleteManyResult, err := db.Client.DeleteMany(ctx, "mydb", "users", map[string]any{"inactive": true})
+if err != nil {
+    log.Fatal(err)
+}
+fmt.Printf("Deleted %d documents\n", deleteManyResult.DeletedCount())
+```
+
 **Available Methods:**
 
 - `.SetUri(uri string)` - MongoDB connection URI
@@ -567,21 +585,29 @@ The `MockDatabase` type provides:
 - **`ExpectPing(err error)`**: Set expected Ping behavior (for all calls)
 - **`ExpectFind(result any, err error)`**: Set expected Find behavior (for all calls)
 - **`ExpectFindOne(result any, err error)`**: Set expected FindOne behavior (for all calls) - returns a `SingleResultInterface`
+- **`ExpectDeleteOne(deletedCount int64, err error)`**: Set expected DeleteOne behavior
+- **`ExpectDeleteMany(deletedCount int64, err error)`**: Set expected DeleteMany behavior
 
 **Sequential Queue Methods:**
 - **`QueuePing(err error)`**: Add a Ping response to the queue for sequential calls
 - **`QueueFind(result any, err error)`**: Add a Find response to the queue for sequential calls
 - **`QueueFindOne(result any, err error)`**: Add a FindOne response to the queue for sequential calls
+- **`QueueDeleteOne(deletedCount int64, err error)`**: Add a DeleteOne response to the queue for sequential calls
+- **`QueueDeleteMany(deletedCount int64, err error)`**: Add a DeleteMany response to the queue for sequential calls
 
 **Custom Function Handlers:**
 - **`PingFunc`**: Custom function for Ping behavior
 - **`FindFunc`**: Custom function for Find behavior
 - **`FindOneFunc`**: Custom function for FindOne behavior (should return `SingleResultInterface`)
+- **`DeleteOneFunc`**: Custom function for DeleteOne behavior
+- **`DeleteManyFunc`**: Custom function for DeleteMany behavior
 
 **Call Tracking:**
 - **`PingCalls`**: Slice of all Ping calls made
 - **`FindCalls`**: Slice of all Find calls made
 - **`FindOneCalls`**: Slice of all FindOne calls made
+- **`DeleteOneCalls`**: Slice of all DeleteOne calls made
+- **`DeleteManyCalls`**: Slice of all DeleteMany calls made
 
 **Utility Methods:**
 - **`Reset()`**: Clear all call history and queues
