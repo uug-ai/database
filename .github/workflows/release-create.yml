@@ -11,6 +11,10 @@ jobs:
       project: ${{ github.event.repository.name }}
       tag: ${{ github.event.release.tag_name }}
       docker_context: "."
-      runner_matrix: '[{"architecture":"amd64","runner":"ubuntu-24.04"},{"architecture":"arm64","runner":"sh-ubuntu-24.04-arm"}]'
+      runner_matrix: >-
+        [
+          {"architecture":"amd64","runner":"ubuntu-24.04"},
+          {"architecture":"arm64","runner":"sh-ubuntu-24.04-arm"}
+        ]
       create_gitops_pr: false
     secrets: inherit
