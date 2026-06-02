@@ -140,7 +140,40 @@ func main() {
 }
 ```
 
-### Query Operations
+### TLS / SSL Connections (e.g. AWS DocumentDB)
+
+MongoDB-compatible services such as AWS DocumentDB can enforce in-transit
+encryption. Enable TLS through the builder and, when the service uses a private
+certificate authority, point it at the CA bundle (for DocumentDB this is the
+global RDS CA bundle, `global-bundle.pem`):
+
+```go
+opts := database.NewMongoOptions().
+    SetHost("docdb-cluster.cluster-xxxx.eu-west-1.docdb.amazonaws.com:27017").
+    SetAuthSource("admin").
+    SetUsername("user").
+    SetPassword("password").
+    SetTimeout(30).
+    SetRetryWrites(false).            // DocumentDB does not support retryable writes
+    SetTLS(true).                     // enforce TLS
+    SetTLSCAFile("/etc/ssl/global-bundle.pem"). // trust the DocumentDB CA bundle (implicitly enables TLS)
+    Build()
+
+db, err := database.New(opts)
+if err != nil {
+    log.Fatal(err)
+}
+```
+
+TLS builder options:
+
+| Method | Description |
+|--------|-------------|
+| `SetTLS(bool)` | Enables/disables a TLS connection to the server. |
+| `SetTLSCAFile(string)` | Path to a PEM file with the trusted certificate authorities. Setting a non-empty path implicitly enables TLS. |
+| `SetTLSInsecureSkipVerify(bool)` | Disables certificate/hostname verification. Insecure — local testing only. |
+
+
 
 #### FindOne with Fluent API
 

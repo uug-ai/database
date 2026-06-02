@@ -2,7 +2,10 @@ package database
 
 import (
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"fmt"
+	"os"
 	"time"
 
 	"github.com/go-playground/validator/v10"
@@ -23,6 +26,18 @@ type MongoOptions struct {
 	AuthMechanism string
 	ReplicaSet    string
 	RetryWrites   bool
+
+	// TLS enables a TLS/SSL connection to the server. This is required for
+	// MongoDB-compatible services that enforce in-transit encryption, such as
+	// AWS DocumentDB with TLS turned on.
+	TLS bool
+	// TLSCAFile is the path to a PEM file containing one or more certificate
+	// authorities to trust when making a TLS connection. For AWS DocumentDB this
+	// is the global RDS CA bundle (e.g. global-bundle.pem).
+	TLSCAFile string
+	// TLSInsecureSkipVerify disables certificate and hostname verification.
+	// This is insecure and should only be used for local testing.
+	TLSInsecureSkipVerify bool
 }
 
 // Validate validates the MongoOptions configuration
@@ -99,6 +114,32 @@ func (b *MongoOptionsBuilder) SetRetryWrites(retryWrites bool) *MongoOptionsBuil
 	return b
 }
 
+// SetTLS enables or disables a TLS/SSL connection to the server.
+// Enable this for MongoDB-compatible services that enforce in-transit
+// encryption, such as AWS DocumentDB with TLS turned on.
+func (b *MongoOptionsBuilder) SetTLS(tls bool) *MongoOptionsBuilder {
+	b.options.TLS = tls
+	return b
+}
+
+// SetTLSCAFile sets the path to a PEM file containing one or more certificate
+// authorities to trust when establishing a TLS connection. Setting this also
+// implicitly enables TLS. For AWS DocumentDB use the global RDS CA bundle.
+func (b *MongoOptionsBuilder) SetTLSCAFile(caFile string) *MongoOptionsBuilder {
+	b.options.TLSCAFile = caFile
+	if caFile != "" {
+		b.options.TLS = true
+	}
+	return b
+}
+
+// SetTLSInsecureSkipVerify disables certificate and hostname verification.
+// This is insecure and should only be used for local testing.
+func (b *MongoOptionsBuilder) SetTLSInsecureSkipVerify(skip bool) *MongoOptionsBuilder {
+	b.options.TLSInsecureSkipVerify = skip
+	return b
+}
+
 // Build builds the Mongo options
 func (b *MongoOptionsBuilder) Build() *MongoOptions {
 	return b.options
@@ -161,6 +202,10 @@ func newMongoClientFromURI(ctx context.Context, options *MongoOptions) (Database
 		SetRetryWrites(options.RetryWrites).
 		SetMonitor(otelmongo.NewMonitor(otelmongo.WithCommandAttributeDisabled(false)))
 
+	if err := applyTLSConfig(opts, options); err != nil {
+		return nil, err
+	}
+
 	client, err := mongo.Connect(ctx, opts)
 	return &MongoClient{
 		Client:  client,
@@ -202,11 +247,45 @@ func newMongoClientFromComponents(ctx context.Context, options *MongoOptions) (D
 		clientOpts.SetServerAPIOptions(serverAPI)
 	}
 
+	if err := applyTLSConfig(clientOpts, options); err != nil {
+		return nil, err
+	}
+
 	client, err := mongo.Connect(ctx, clientOpts)
 	return &MongoClient{
 		Client:  client,
 		Options: options,
 	}, err
+}
+
+// applyTLSConfig configures TLS on the provided client options when TLS is
+// enabled. It optionally loads a custom CA bundle (required by managed services
+// such as AWS DocumentDB) and supports skipping verification for local testing.
+func applyTLSConfig(clientOpts *moptions.ClientOptions, options *MongoOptions) error {
+	if !options.TLS && options.TLSCAFile == "" {
+		return nil
+	}
+
+	tlsConfig := &tls.Config{
+		MinVersion:         tls.VersionTLS12,
+		InsecureSkipVerify: options.TLSInsecureSkipVerify,
+	}
+
+	if options.TLSCAFile != "" {
+		caBytes, err := os.ReadFile(options.TLSCAFile)
+		if err != nil {
+			return fmt.Errorf("failed to read TLS CA file %q: %w", options.TLSCAFile, err)
+		}
+
+		caPool := x509.NewCertPool()
+		if !caPool.AppendCertsFromPEM(caBytes) {
+			return fmt.Errorf("failed to parse any certificates from TLS CA file %q", options.TLSCAFile)
+		}
+		tlsConfig.RootCAs = caPool
+	}
+
+	clientOpts.SetTLSConfig(tlsConfig)
+	return nil
 }
 
 // Ping pings the MongoDB server to check connectivity
