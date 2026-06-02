@@ -216,6 +216,49 @@ func TestMongoOptionsBuilder(t *testing.T) {
 		}
 	})
 
+	t.Run("TLSSetters", func(t *testing.T) {
+		opts := NewMongoOptions().
+			SetUri("mongodb://localhost").
+			SetTimeout(5000).
+			SetTLS(true).
+			SetTLSInsecureSkipVerify(true).
+			Build()
+
+		if !opts.TLS {
+			t.Error("expected TLS to be true")
+		}
+		if !opts.TLSInsecureSkipVerify {
+			t.Error("expected TLSInsecureSkipVerify to be true")
+		}
+	})
+
+	t.Run("TLSCAFileImplicitlyEnablesTLS", func(t *testing.T) {
+		opts := NewMongoOptions().
+			SetUri("mongodb://localhost").
+			SetTimeout(5000).
+			SetTLSCAFile("/etc/ssl/global-bundle.pem").
+			Build()
+
+		if opts.TLSCAFile != "/etc/ssl/global-bundle.pem" {
+			t.Errorf("expected TLSCAFile to be '/etc/ssl/global-bundle.pem', got '%s'", opts.TLSCAFile)
+		}
+		if !opts.TLS {
+			t.Error("expected TLS to be implicitly enabled when a CA file is set")
+		}
+	})
+
+	t.Run("EmptyTLSCAFileDoesNotEnableTLS", func(t *testing.T) {
+		opts := NewMongoOptions().
+			SetUri("mongodb://localhost").
+			SetTimeout(5000).
+			SetTLSCAFile("").
+			Build()
+
+		if opts.TLS {
+			t.Error("expected TLS to remain disabled when CA file is empty")
+		}
+	})
+
 	t.Run("PartialBuilder", func(t *testing.T) {
 		opts := NewMongoOptions().
 			SetUri("mongodb://localhost").
