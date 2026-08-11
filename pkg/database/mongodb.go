@@ -6,6 +6,7 @@ import (
 	"crypto/x509"
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/go-playground/validator/v10"
@@ -15,8 +16,17 @@ import (
 	"go.opentelemetry.io/contrib/instrumentation/go.mongodb.org/mongo-driver/mongo/otelmongo"
 )
 
+const (
+	// FlavorMongoDB selects native MongoDB or MongoDB Atlas behavior.
+	FlavorMongoDB = "mongodb"
+	// FlavorDocumentDB selects AWS DocumentDB-compatible driver behavior.
+	FlavorDocumentDB = "documentdb"
+)
+
 // MongoOptions holds the configuration for Mongo
 type MongoOptions struct {
+	// Flavor selects MongoDB or DocumentDB compatibility behavior.
+	Flavor        string `validate:"omitempty,oneof=mongodb documentdb"`
 	Uri           string `validate:"required_without=Host"`
 	Host          string `validate:"required_without=Uri"`
 	AuthSource    string `validate:"required_without=Uri"`
@@ -54,8 +64,15 @@ type MongoOptionsBuilder struct {
 // MongoOptions creates a new Mongo options builder
 func NewMongoOptions() *MongoOptionsBuilder {
 	return &MongoOptionsBuilder{
-		options: &MongoOptions{},
+		options: &MongoOptions{Flavor: FlavorMongoDB},
 	}
+}
+
+// SetFlavor selects the MongoDB-compatible backend. An empty value defaults to
+// MongoDB so callers can pass optional configuration directly.
+func (b *MongoOptionsBuilder) SetFlavor(flavor string) *MongoOptionsBuilder {
+	b.options.Flavor = normalizeMongoFlavor(flavor)
+	return b
 }
 
 // SetUri set
@@ -109,6 +126,7 @@ func (b *MongoOptionsBuilder) SetTimeout(timeout int) *MongoOptionsBuilder {
 // SetRetryWrites sets the retry writes option
 // This option was added because of DocumentDB compatibility:
 // https://stackoverflow.com/questions/70260941/documentdb-mongodb-updateone-retryable-writes-are-not-supported
+// DocumentDB flavor always disables retryable writes, even when this is true.
 func (b *MongoOptionsBuilder) SetRetryWrites(retryWrites bool) *MongoOptionsBuilder {
 	b.options.RetryWrites = retryWrites
 	return b
@@ -143,6 +161,33 @@ func (b *MongoOptionsBuilder) SetTLSInsecureSkipVerify(skip bool) *MongoOptionsB
 // Build builds the Mongo options
 func (b *MongoOptionsBuilder) Build() *MongoOptions {
 	return b.options
+}
+
+// IsDocumentDB reports whether these options target AWS DocumentDB.
+func (m *MongoOptions) IsDocumentDB() bool {
+	return normalizeMongoFlavor(m.Flavor) == FlavorDocumentDB
+}
+
+func normalizeMongoFlavor(flavor string) string {
+	flavor = strings.ToLower(strings.TrimSpace(flavor))
+	if flavor == "" {
+		return FlavorMongoDB
+	}
+	return flavor
+}
+
+func (m *MongoOptions) retryWritesEnabled() bool {
+	return !m.IsDocumentDB() && m.RetryWrites
+}
+
+func (m *MongoOptions) authMechanism() string {
+	if m.AuthMechanism != "" {
+		return m.AuthMechanism
+	}
+	if m.IsDocumentDB() {
+		return "SCRAM-SHA-1"
+	}
+	return "SCRAM-SHA-256"
 }
 
 // Projection provides a fluent API for building MongoDB projections without exposing bson
@@ -188,32 +233,44 @@ type MongoClient struct {
 func NewMongoClient(options *MongoOptions) (DatabaseInterface, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(options.Timeout)*time.Millisecond)
 	defer cancel()
-	if options.Uri != "" {
-		return newMongoClientFromURI(ctx, options)
-	}
-	return newMongoClientFromComponents(ctx, options)
-}
 
-func newMongoClientFromURI(ctx context.Context, options *MongoOptions) (DatabaseInterface, error) {
-	serverAPI := moptions.ServerAPI(moptions.ServerAPIVersion1)
-	opts := moptions.Client().
-		ApplyURI(options.Uri).
-		SetServerAPIOptions(serverAPI).
-		SetRetryWrites(options.RetryWrites).
-		SetMonitor(otelmongo.NewMonitor(otelmongo.WithCommandAttributeDisabled(false)))
-
-	if err := applyTLSConfig(opts, options); err != nil {
+	clientOpts, err := buildMongoClientOptions(options)
+	if err != nil {
 		return nil, err
 	}
 
-	client, err := mongo.Connect(ctx, opts)
+	client, err := mongo.Connect(ctx, clientOpts)
 	return &MongoClient{
 		Client:  client,
 		Options: options,
 	}, err
 }
 
-func newMongoClientFromComponents(ctx context.Context, options *MongoOptions) (DatabaseInterface, error) {
+func buildMongoClientOptions(options *MongoOptions) (*moptions.ClientOptions, error) {
+	if options.Uri != "" {
+		return buildMongoClientOptionsFromURI(options)
+	}
+	return buildMongoClientOptionsFromComponents(options)
+}
+
+func buildMongoClientOptionsFromURI(options *MongoOptions) (*moptions.ClientOptions, error) {
+	opts := moptions.Client().
+		ApplyURI(options.Uri).
+		SetRetryWrites(options.retryWritesEnabled()).
+		SetMonitor(otelmongo.NewMonitor(otelmongo.WithCommandAttributeDisabled(false)))
+
+	if !options.IsDocumentDB() {
+		opts.SetServerAPIOptions(moptions.ServerAPI(moptions.ServerAPIVersion1))
+	}
+
+	if err := applyTLSConfig(opts, options); err != nil {
+		return nil, err
+	}
+
+	return opts, nil
+}
+
+func buildMongoClientOptionsFromComponents(options *MongoOptions) (*moptions.ClientOptions, error) {
 	// Check if host contains mongodb.net (Atlas) - use mongodb+srv://
 	protocol := "mongodb://"
 	if len(options.Host) > 11 && options.Host[len(options.Host)-11:] == "mongodb.net" {
@@ -225,15 +282,13 @@ func newMongoClientFromComponents(ctx context.Context, options *MongoOptions) (D
 	if options.ReplicaSet != "" {
 		uri = fmt.Sprintf("%s/?replicaSet=%s", uri, options.ReplicaSet)
 	}
-
-	// Default to SCRAM-SHA-256 if no AuthMechanism is provided
 	if options.AuthMechanism == "" {
-		options.AuthMechanism = "SCRAM-SHA-256"
+		options.AuthMechanism = options.authMechanism()
 	}
 
 	clientOpts := moptions.Client().
 		ApplyURI(uri).
-		SetRetryWrites(options.RetryWrites).
+		SetRetryWrites(options.retryWritesEnabled()).
 		SetAuth(moptions.Credential{
 			AuthMechanism: options.AuthMechanism,
 			AuthSource:    options.AuthSource,
@@ -242,7 +297,7 @@ func newMongoClientFromComponents(ctx context.Context, options *MongoOptions) (D
 		})
 
 	// Add ServerAPI for Atlas connections
-	if protocol == "mongodb+srv://" {
+	if protocol == "mongodb+srv://" && !options.IsDocumentDB() {
 		serverAPI := moptions.ServerAPI(moptions.ServerAPIVersion1)
 		clientOpts.SetServerAPIOptions(serverAPI)
 	}
@@ -251,11 +306,7 @@ func newMongoClientFromComponents(ctx context.Context, options *MongoOptions) (D
 		return nil, err
 	}
 
-	client, err := mongo.Connect(ctx, clientOpts)
-	return &MongoClient{
-		Client:  client,
-		Options: options,
-	}, err
+	return clientOpts, nil
 }
 
 // applyTLSConfig configures TLS on the provided client options when TLS is

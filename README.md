@@ -14,9 +14,11 @@ A Go library for connecting to and managing MongoDB with a unified interface usi
 ## Features
 
 - **MongoDB Support**: Full MongoDB driver integration with connection pooling
+- **DocumentDB Support**: Flavor-aware Stable API, retry-write, and authentication defaults
 - **Options Builder Pattern**: Clean, fluent interface for configuration
 - **Built-in Validation**: Compile-time type safety with validation
 - **OpenTelemetry Integration**: Distributed tracing and observability out of the box
+- **TLS Support**: TLS 1.2+, custom CA bundles, and explicit local-test verification bypass
 - **Context Support**: Full context.Context support for timeouts and cancellation
 - **Comprehensive Tests**: Full test coverage including mocks
 - **Production Ready**: Optimized for high-performance applications
@@ -49,7 +51,7 @@ func main() {
         SetReplicaSet("rs0").
         SetUsername("user").
         SetPassword("password").
-        SetTimeout(10).
+        SetTimeout(10_000).
         Build()
 
     // Create database client with options
@@ -117,7 +119,7 @@ func main() {
         SetAuthMechanism("SCRAM-SHA-256").
         SetUsername("user").
         SetPassword("password").
-        SetTimeout(30).
+        SetTimeout(30_000).
         SetRetryWrites(true).
         Build()
 
@@ -149,13 +151,13 @@ global RDS CA bundle, `global-bundle.pem`):
 
 ```go
 opts := database.NewMongoOptions().
+    SetFlavor(database.FlavorDocumentDB).
     SetHost("docdb-cluster.cluster-xxxx.eu-west-1.docdb.amazonaws.com:27017").
     SetAuthSource("admin").
     SetUsername("user").
     SetPassword("password").
-    SetTimeout(30).
-    SetRetryWrites(false).            // DocumentDB does not support retryable writes
-    SetTLS(true).                     // enforce TLS
+    SetTimeout(30_000).
+    SetTLS(true).                              // enforce TLS
     SetTLSCAFile("/etc/ssl/global-bundle.pem"). // trust the DocumentDB CA bundle (implicitly enables TLS)
     Build()
 
@@ -164,6 +166,20 @@ if err != nil {
     log.Fatal(err)
 }
 ```
+
+DocumentDB flavor centralizes the driver differences that would otherwise have
+to be repeated by every service:
+
+| Behavior | `mongodb` (default) | `documentdb` |
+|----------|---------------------|--------------|
+| MongoDB Stable API | Enabled for URI and Atlas SRV connections | Disabled because DocumentDB does not implement it |
+| Retryable writes | Uses `SetRetryWrites` | Always disabled |
+| Component auth default | `SCRAM-SHA-256` | `SCRAM-SHA-1` |
+
+Flavor does not implicitly enable TLS. Use `SetTLS(true)` or provide a CA path
+with `SetTLSCAFile`; a non-empty CA path implicitly enables TLS. The library
+loads every certificate in the PEM bundle into a dedicated root pool and
+enforces TLS 1.2 or newer.
 
 TLS builder options:
 
@@ -271,13 +287,14 @@ fmt.Printf("Deleted %d documents\n", deleteManyResult.DeletedCount())
 **Available Methods:**
 
 - `.SetUri(uri string)` - MongoDB connection URI
+- `.SetFlavor(flavor string)` - Backend flavor: `database.FlavorMongoDB` or `database.FlavorDocumentDB`
 - `.SetHost(host string)` - Database host address
 - `.SetAuthSource(source string)` - Authentication source database
 - `.SetAuthMechanism(mechanism string)` - Authentication mechanism (e.g., SCRAM-SHA-256)
 - `.SetReplicaSet(replicaSet string)` - Replica set name
 - `.SetUsername(username string)` - Database username
 - `.SetPassword(password string)` - Database password
-- `.SetTimeout(seconds int)` - Connection timeout in seconds
+- `.SetTimeout(milliseconds int)` - Connection timeout in milliseconds
 - `.SetRetryWrites(retry bool)` - Enable automatic retry writes
 - `.Build()` - Returns the MongoOptions object
 
@@ -311,7 +328,7 @@ opts := database.NewMongoOptions().
     SetReplicaSet("rs0").
     SetUsername("admin").
     SetPassword("password").
-    SetTimeout(10).
+    SetTimeout(10_000).
     Build()
 
 db, err := database.New(opts)
@@ -325,6 +342,7 @@ You can load configuration from environment variables:
 import "os"
 
 opts := database.NewMongoOptions().
+    SetFlavor(os.Getenv("MONGODB_FLAVOR")).
     SetUri(os.Getenv("MONGO_URI")).
     SetHost(os.Getenv("MONGO_HOST")).
     SetAuthSource(os.Getenv("MONGO_AUTH_SOURCE")).
@@ -332,7 +350,10 @@ opts := database.NewMongoOptions().
     SetReplicaSet(os.Getenv("MONGO_REPLICA_SET")).
     SetUsername(os.Getenv("MONGO_USERNAME")).
     SetPassword(os.Getenv("MONGO_PASSWORD")).
-    SetTimeout(30).
+    SetTLS(os.Getenv("MONGODB_TLS") == "true").
+    SetTLSCAFile(os.Getenv("MONGODB_TLS_CA_FILE")).
+    SetTLSInsecureSkipVerify(os.Getenv("MONGODB_TLS_INSECURE_SKIP_VERIFY") == "true").
+    SetTimeout(30_000).
     Build()
 
 db, err := database.New(opts)
@@ -349,20 +370,22 @@ MONGO_AUTH_MECHANISM=SCRAM-SHA-256
 MONGO_REPLICA_SET=rs0
 MONGO_USERNAME=admin
 MONGO_PASSWORD=password
+MONGODB_FLAVOR=mongodb
+MONGODB_TLS=false
+MONGODB_TLS_CA_FILE=
+MONGODB_TLS_INSECURE_SKIP_VERIFY=false
 ```
 
 ## Validation
 
-MongoDB options use [go-playground/validator](https://github.com/go-playground/validator) for configuration validation. All required fields must be provided:
+MongoDB options use [go-playground/validator](https://github.com/go-playground/validator) for configuration validation:
 
-- `Uri` - Connection URI (required)
-- `Host` - Database host (required)
-- `AuthSource` - Auth source database (required)
-- `AuthMechanism` - Auth mechanism type (required)
-- `ReplicaSet` - Replica set name (required)
-- `Username` - Database username (required)
-- `Password` - Database password (required)
-- `Timeout` - Connection timeout >= 0 (required)
+- `Flavor` - Optional; defaults to `mongodb` and accepts `mongodb` or `documentdb`
+- `Uri` - Required when `Host` is empty
+- `Host`, `AuthSource`, `Username`, and `Password` - Required when `Uri` is empty
+- `AuthMechanism` - Optional; defaults according to flavor for component connections
+- `ReplicaSet` - Optional
+- `Timeout` - Required connection timeout greater than zero, in milliseconds
 
 Validation is automatically performed when calling `database.New(opts)`, ensuring invalid configurations are caught before the client is created.
 
@@ -818,7 +841,7 @@ opts := database.NewMongoOptions().
     SetAuthMechanism("SCRAM-SHA-256").
     SetUsername("user").
     SetPassword("password").
-    SetTimeout(30).
+    SetTimeout(30_000).
     Build()
 
 db, err := database.New(opts)
