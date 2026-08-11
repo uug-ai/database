@@ -2,7 +2,12 @@ package database
 
 import (
 	"context"
+	"crypto/tls"
+	"encoding/pem"
+	"net/http/httptest"
 	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -273,6 +278,207 @@ func TestMongoOptionsBuilder(t *testing.T) {
 		}
 		if opts.RetryWrites {
 			t.Error("expected RetryWrites to be false by default")
+		}
+	})
+}
+
+func TestMongoFlavorBuilder(t *testing.T) {
+	t.Run("DefaultsToMongoDB", func(t *testing.T) {
+		opts := NewMongoOptions().Build()
+
+		if opts.Flavor != FlavorMongoDB {
+			t.Fatalf("expected default flavor %q, got %q", FlavorMongoDB, opts.Flavor)
+		}
+		if opts.IsDocumentDB() {
+			t.Fatal("expected the default flavor not to be DocumentDB")
+		}
+	})
+
+	t.Run("NormalizesDocumentDB", func(t *testing.T) {
+		opts := NewMongoOptions().SetFlavor(" DocumentDB ").Build()
+
+		if opts.Flavor != FlavorDocumentDB {
+			t.Fatalf("expected flavor %q, got %q", FlavorDocumentDB, opts.Flavor)
+		}
+		if !opts.IsDocumentDB() {
+			t.Fatal("expected DocumentDB flavor to be detected")
+		}
+	})
+
+	t.Run("RejectsUnsupportedFlavor", func(t *testing.T) {
+		opts := NewMongoOptions().
+			SetUri("mongodb://localhost").
+			SetTimeout(5000).
+			SetFlavor("unsupported").
+			Build()
+
+		if err := opts.Validate(); err == nil {
+			t.Fatal("expected unsupported flavor validation to fail")
+		}
+	})
+}
+
+func TestMongoClientOptionsByFlavor(t *testing.T) {
+	t.Run("MongoDBURIUsesStableAPIAndConfiguredRetryWrites", func(t *testing.T) {
+		opts := NewMongoOptions().
+			SetUri("mongodb://localhost:27017").
+			SetTimeout(5000).
+			SetRetryWrites(true).
+			Build()
+
+		clientOpts, err := buildMongoClientOptions(opts)
+		if err != nil {
+			t.Fatalf("build MongoDB client options: %v", err)
+		}
+		if clientOpts.ServerAPIOptions == nil {
+			t.Fatal("expected MongoDB URI connection to use Stable API")
+		}
+		if clientOpts.RetryWrites == nil || !*clientOpts.RetryWrites {
+			t.Fatal("expected MongoDB connection to preserve retryWrites=true")
+		}
+	})
+
+	t.Run("DocumentDBDisablesStableAPIAndRetryWrites", func(t *testing.T) {
+		opts := NewMongoOptions().
+			SetUri("mongodb://documentdb.example:27017").
+			SetTimeout(5000).
+			SetFlavor(FlavorDocumentDB).
+			SetRetryWrites(true).
+			Build()
+
+		clientOpts, err := buildMongoClientOptions(opts)
+		if err != nil {
+			t.Fatalf("build DocumentDB client options: %v", err)
+		}
+		if clientOpts.ServerAPIOptions != nil {
+			t.Fatal("expected DocumentDB connection not to request MongoDB Stable API")
+		}
+		if clientOpts.RetryWrites == nil || *clientOpts.RetryWrites {
+			t.Fatal("expected DocumentDB connection to force retryWrites=false")
+		}
+	})
+
+	t.Run("DocumentDBComponentsDefaultToSCRAMSHA1", func(t *testing.T) {
+		opts := NewMongoOptions().
+			SetHost("documentdb.example:27017").
+			SetAuthSource("admin").
+			SetUsername("user").
+			SetPassword("password").
+			SetTimeout(5000).
+			SetFlavor(FlavorDocumentDB).
+			Build()
+
+		clientOpts, err := buildMongoClientOptions(opts)
+		if err != nil {
+			t.Fatalf("build DocumentDB client options: %v", err)
+		}
+		if clientOpts.Auth == nil || clientOpts.Auth.AuthMechanism != "SCRAM-SHA-1" {
+			t.Fatalf("expected DocumentDB auth mechanism SCRAM-SHA-1, got %#v", clientOpts.Auth)
+		}
+		if opts.AuthMechanism != "SCRAM-SHA-1" {
+			t.Fatalf("expected resolved auth mechanism to be stored in options, got %q", opts.AuthMechanism)
+		}
+	})
+}
+
+func TestMongoClientOptionsTLS(t *testing.T) {
+	t.Run("DisabledByDefault", func(t *testing.T) {
+		opts := NewMongoOptions().
+			SetUri("mongodb://localhost:27017").
+			SetTimeout(5000).
+			Build()
+
+		clientOpts, err := buildMongoClientOptions(opts)
+		if err != nil {
+			t.Fatalf("build client options: %v", err)
+		}
+		if clientOpts.TLSConfig != nil {
+			t.Fatal("expected TLS configuration to remain unset")
+		}
+	})
+
+	t.Run("EnforcesTLS12AndExplicitInsecureMode", func(t *testing.T) {
+		opts := NewMongoOptions().
+			SetUri("mongodb://localhost:27017").
+			SetTimeout(5000).
+			SetTLS(true).
+			SetTLSInsecureSkipVerify(true).
+			Build()
+
+		clientOpts, err := buildMongoClientOptions(opts)
+		if err != nil {
+			t.Fatalf("build client options: %v", err)
+		}
+		if clientOpts.TLSConfig == nil {
+			t.Fatal("expected TLS configuration")
+		}
+		if clientOpts.TLSConfig.MinVersion != tls.VersionTLS12 {
+			t.Fatalf("expected minimum TLS version 1.2, got %d", clientOpts.TLSConfig.MinVersion)
+		}
+		if !clientOpts.TLSConfig.InsecureSkipVerify {
+			t.Fatal("expected explicitly configured insecure verification mode")
+		}
+	})
+
+	t.Run("LoadsCustomCAAndImplicitlyEnablesTLS", func(t *testing.T) {
+		server := httptest.NewTLSServer(nil)
+		defer server.Close()
+
+		caFile := filepath.Join(t.TempDir(), "ca.pem")
+		certificate := pem.EncodeToMemory(&pem.Block{
+			Type:  "CERTIFICATE",
+			Bytes: server.Certificate().Raw,
+		})
+		if err := os.WriteFile(caFile, certificate, 0o600); err != nil {
+			t.Fatalf("write test CA: %v", err)
+		}
+
+		opts := NewMongoOptions().
+			SetUri("mongodb://localhost:27017").
+			SetTimeout(5000).
+			SetTLSCAFile(caFile).
+			Build()
+
+		clientOpts, err := buildMongoClientOptions(opts)
+		if err != nil {
+			t.Fatalf("build client options: %v", err)
+		}
+		if clientOpts.TLSConfig == nil || clientOpts.TLSConfig.RootCAs == nil {
+			t.Fatal("expected custom CA pool to be injected into TLS configuration")
+		}
+		if len(clientOpts.TLSConfig.RootCAs.Subjects()) != 1 {
+			t.Fatalf("expected one custom CA, got %d", len(clientOpts.TLSConfig.RootCAs.Subjects()))
+		}
+	})
+
+	t.Run("RejectsMissingCAFile", func(t *testing.T) {
+		caFile := filepath.Join(t.TempDir(), "missing.pem")
+		opts := NewMongoOptions().
+			SetUri("mongodb://localhost:27017").
+			SetTimeout(5000).
+			SetTLSCAFile(caFile).
+			Build()
+
+		_, err := buildMongoClientOptions(opts)
+		if err == nil || !strings.Contains(err.Error(), "failed to read TLS CA file") {
+			t.Fatalf("expected missing CA error, got %v", err)
+		}
+	})
+
+	t.Run("RejectsMalformedCAFile", func(t *testing.T) {
+		caFile := filepath.Join(t.TempDir(), "invalid.pem")
+		if err := os.WriteFile(caFile, []byte("not a certificate"), 0o600); err != nil {
+			t.Fatalf("write malformed CA: %v", err)
+		}
+		opts := NewMongoOptions().
+			SetUri("mongodb://localhost:27017").
+			SetTimeout(5000).
+			SetTLSCAFile(caFile).
+			Build()
+
+		_, err := buildMongoClientOptions(opts)
+		if err == nil || !strings.Contains(err.Error(), "failed to parse any certificates") {
+			t.Fatalf("expected malformed CA error, got %v", err)
 		}
 	})
 }
