@@ -826,3 +826,88 @@ func TestMockDatabaseCount(t *testing.T) {
 		}
 	})
 }
+
+func TestMockDatabaseInsert(t *testing.T) {
+	t.Run("ExpectInsertOneTracksDocumentAndOptions", func(t *testing.T) {
+		mock := NewMockDatabase().ExpectInsertOne("inserted-id", nil)
+		document := bson.M{"name": "organisation"}
+		opts := options.InsertOne().SetBypassDocumentValidation(true)
+
+		result, err := mock.InsertOne(context.Background(), "testdb", "organisation", document, opts)
+		if err != nil {
+			t.Fatalf("InsertOne error: %v", err)
+		}
+		if result != "inserted-id" {
+			t.Fatalf("InsertOne result = %#v", result)
+		}
+		if len(mock.InsertOneCalls) != 1 {
+			t.Fatalf("InsertOne calls = %d", len(mock.InsertOneCalls))
+		}
+		call := mock.InsertOneCalls[0]
+		if call.Db != "testdb" || call.Collection != "organisation" || len(call.Opts) != 1 || call.Opts[0] != opts {
+			t.Fatalf("unexpected InsertOne call: %#v", call)
+		}
+	})
+
+	t.Run("QueueInsertManyPreservesResponsesAndReset", func(t *testing.T) {
+		expectedErr := errors.New("insert many failed")
+		mock := NewMockDatabase().
+			QueueInsertMany([]any{"first", "second"}, nil).
+			QueueInsertMany(nil, expectedErr)
+		documents := []any{bson.M{"name": "first"}, bson.M{"name": "second"}}
+		opts := options.InsertMany().SetOrdered(false)
+
+		result, err := mock.InsertMany(context.Background(), "testdb", "organisation", documents, opts)
+		if err != nil {
+			t.Fatalf("first InsertMany error: %v", err)
+		}
+		insertedIDs, ok := result.([]any)
+		if !ok || len(insertedIDs) != 2 {
+			t.Fatalf("first InsertMany result = %#v", result)
+		}
+
+		result, err = mock.InsertMany(context.Background(), "testdb", "organisation", documents)
+		if !errors.Is(err, expectedErr) || result != nil {
+			t.Fatalf("second InsertMany result = %#v, error = %v", result, err)
+		}
+		if len(mock.InsertManyCalls) != 2 || len(mock.InsertManyCalls[0].Opts) != 1 || mock.InsertManyCalls[0].Opts[0] != opts {
+			t.Fatalf("InsertMany calls = %#v", mock.InsertManyCalls)
+		}
+
+		mock.Reset()
+		if len(mock.InsertManyCalls) != 0 || len(mock.InsertManyQueue) != 0 {
+			t.Fatal("expected InsertMany state to be cleared")
+		}
+	})
+
+	t.Run("ExpectInsertManyReturnsConfiguredResult", func(t *testing.T) {
+		mock := NewMockDatabase().ExpectInsertMany([]any{"first", "second"}, nil)
+
+		result, err := mock.InsertMany(context.Background(), "testdb", "organisation", []any{bson.M{}, bson.M{}})
+		if err != nil {
+			t.Fatalf("InsertMany error: %v", err)
+		}
+		insertedIDs, ok := result.([]any)
+		if !ok || len(insertedIDs) != 2 || insertedIDs[0] != "first" || insertedIDs[1] != "second" {
+			t.Fatalf("InsertMany result = %#v", result)
+		}
+	})
+
+	t.Run("QueueInsertOnePreservesErrorAndReset", func(t *testing.T) {
+		expectedErr := errors.New("insert one failed")
+		mock := NewMockDatabase().QueueInsertOne(nil, expectedErr)
+
+		result, err := mock.InsertOne(context.Background(), "testdb", "organisation", bson.M{})
+		if !errors.Is(err, expectedErr) || result != nil {
+			t.Fatalf("InsertOne result = %#v, error = %v", result, err)
+		}
+		if len(mock.InsertOneCalls) != 1 {
+			t.Fatalf("InsertOne calls = %d", len(mock.InsertOneCalls))
+		}
+
+		mock.Reset()
+		if len(mock.InsertOneCalls) != 0 || len(mock.InsertOneQueue) != 0 {
+			t.Fatal("expected InsertOne state to be cleared")
+		}
+	})
+}

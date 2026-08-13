@@ -487,11 +487,12 @@ func (m *MongoClient) FindOneAndUpdate(ctx context.Context, db string, collectio
 	return &SingleResult{result: coll.FindOneAndUpdate(ctx, filter, update, findOneAndUpdateOpts...)}
 }
 
-// InsertOne inserts a single document into the specified database and collection
+// InsertOne inserts a single document into the specified database and collection.
+// Supports *moptions.InsertOneOptions in opts.
 func (m *MongoClient) InsertOne(ctx context.Context, db string, collection string, document any, opts ...any) (any, error) {
 	coll := m.Client.Database(db).Collection(collection)
 
-	result, err := coll.InsertOne(ctx, document)
+	result, err := coll.InsertOne(ctx, document, insertOneOptions(opts...)...)
 	if err != nil {
 		return nil, err
 	}
@@ -499,16 +500,41 @@ func (m *MongoClient) InsertOne(ctx context.Context, db string, collection strin
 	return result.InsertedID, nil
 }
 
-// InsertMany inserts multiple documents into the specified database and collection
+// insertOneOptions retains supported MongoDB options and ignores unrelated
+// wrapper options, consistent with the other DatabaseInterface methods.
+func insertOneOptions(opts ...any) []*moptions.InsertOneOptions {
+	var insertOpts []*moptions.InsertOneOptions
+	for _, opt := range opts {
+		if io, ok := opt.(*moptions.InsertOneOptions); ok {
+			insertOpts = append(insertOpts, io)
+		}
+	}
+	return insertOpts
+}
+
+// InsertMany inserts multiple documents into the specified database and collection.
+// Supports *moptions.InsertManyOptions in opts.
 func (m *MongoClient) InsertMany(ctx context.Context, db string, collection string, documents []any, opts ...any) (any, error) {
 	coll := m.Client.Database(db).Collection(collection)
 
-	result, err := coll.InsertMany(ctx, documents)
+	result, err := coll.InsertMany(ctx, documents, insertManyOptions(opts...)...)
 	if err != nil {
 		return nil, err
 	}
 
 	return result.InsertedIDs, nil
+}
+
+// insertManyOptions retains supported MongoDB options and ignores unrelated
+// wrapper options, consistent with the other DatabaseInterface methods.
+func insertManyOptions(opts ...any) []*moptions.InsertManyOptions {
+	var insertOpts []*moptions.InsertManyOptions
+	for _, opt := range opts {
+		if io, ok := opt.(*moptions.InsertManyOptions); ok {
+			insertOpts = append(insertOpts, io)
+		}
+	}
+	return insertOpts
 }
 
 // SingleResult wraps a MongoDB single result for fluent API usage

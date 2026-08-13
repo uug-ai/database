@@ -40,6 +40,12 @@ type MockDatabase struct {
 	// CountFunc allows customizing Count behavior
 	CountFunc func(ctx context.Context, db string, collection string, filter any, opts ...any) (int64, error)
 
+	// InsertOneFunc allows customizing InsertOne behavior
+	InsertOneFunc func(ctx context.Context, db string, collection string, document any, opts ...any) (any, error)
+
+	// InsertManyFunc allows customizing InsertMany behavior
+	InsertManyFunc func(ctx context.Context, db string, collection string, documents []any, opts ...any) (any, error)
+
 	// Sequential response queues for multiple calls
 	PingQueue             []PingResponse
 	FindQueue             []FindResponse
@@ -50,6 +56,8 @@ type MockDatabase struct {
 	DeleteOneQueue        []DeleteResponse
 	DeleteManyQueue       []DeleteResponse
 	CountQueue            []CountResponse
+	InsertOneQueue        []InsertResponse
+	InsertManyQueue       []InsertResponse
 
 	// Call tracking
 	PingCalls             []PingCall
@@ -61,6 +69,8 @@ type MockDatabase struct {
 	DeleteOneCalls        []DeleteCall
 	DeleteManyCalls       []DeleteCall
 	CountCalls            []CountCall
+	InsertOneCalls        []InsertOneCall
+	InsertManyCalls       []InsertManyCall
 }
 
 var _ DatabaseInterface = (*MockDatabase)(nil)
@@ -301,12 +311,36 @@ type CountResponse struct {
 	Err   error
 }
 
+// InsertResponse represents a queued insert response.
+type InsertResponse struct {
+	Result any
+	Err    error
+}
+
 // CountCall records a call to Count
 type CountCall struct {
 	Ctx        context.Context
 	Db         string
 	Collection string
 	Filter     any
+	Opts       []any
+}
+
+// InsertOneCall records a call to InsertOne.
+type InsertOneCall struct {
+	Ctx        context.Context
+	Db         string
+	Collection string
+	Document   any
+	Opts       []any
+}
+
+// InsertManyCall records a call to InsertMany.
+type InsertManyCall struct {
+	Ctx        context.Context
+	Db         string
+	Collection string
+	Documents  []any
 	Opts       []any
 }
 
@@ -349,6 +383,8 @@ func NewMockDatabase() *MockDatabase {
 		DeleteOneCalls:        []DeleteCall{},
 		DeleteManyCalls:       []DeleteCall{},
 		CountCalls:            []CountCall{},
+		InsertOneCalls:        []InsertOneCall{},
+		InsertManyCalls:       []InsertManyCall{},
 		PingQueue:             []PingResponse{},
 		FindQueue:             []FindResponse{},
 		FindOneQueue:          []FindOneResponse{},
@@ -358,6 +394,8 @@ func NewMockDatabase() *MockDatabase {
 		DeleteOneQueue:        []DeleteResponse{},
 		DeleteManyQueue:       []DeleteResponse{},
 		CountQueue:            []CountResponse{},
+		InsertOneQueue:        []InsertResponse{},
+		InsertManyQueue:       []InsertResponse{},
 	}
 }
 
@@ -713,11 +751,43 @@ func (m *MockDatabase) Count(ctx context.Context, db string, collection string, 
 
 // InsertOne implements DatabaseInterface
 func (m *MockDatabase) InsertOne(ctx context.Context, db string, collection string, document any, opts ...any) (any, error) {
+	m.InsertOneCalls = append(m.InsertOneCalls, InsertOneCall{
+		Ctx:        ctx,
+		Db:         db,
+		Collection: collection,
+		Document:   document,
+		Opts:       opts,
+	})
+
+	if len(m.InsertOneQueue) > 0 {
+		response := m.InsertOneQueue[0]
+		m.InsertOneQueue = m.InsertOneQueue[1:]
+		return response.Result, response.Err
+	}
+	if m.InsertOneFunc != nil {
+		return m.InsertOneFunc(ctx, db, collection, document, opts...)
+	}
 	return nil, fmt.Errorf("InsertOne not implemented in MockDatabase")
 }
 
 // InsertMany implements DatabaseInterface
 func (m *MockDatabase) InsertMany(ctx context.Context, db string, collection string, documents []any, opts ...any) (any, error) {
+	m.InsertManyCalls = append(m.InsertManyCalls, InsertManyCall{
+		Ctx:        ctx,
+		Db:         db,
+		Collection: collection,
+		Documents:  documents,
+		Opts:       opts,
+	})
+
+	if len(m.InsertManyQueue) > 0 {
+		response := m.InsertManyQueue[0]
+		m.InsertManyQueue = m.InsertManyQueue[1:]
+		return response.Result, response.Err
+	}
+	if m.InsertManyFunc != nil {
+		return m.InsertManyFunc(ctx, db, collection, documents, opts...)
+	}
 	return nil, fmt.Errorf("InsertMany not implemented in MockDatabase")
 }
 
@@ -732,6 +802,8 @@ func (m *MockDatabase) Reset() {
 	m.DeleteOneCalls = []DeleteCall{}
 	m.DeleteManyCalls = []DeleteCall{}
 	m.CountCalls = []CountCall{}
+	m.InsertOneCalls = []InsertOneCall{}
+	m.InsertManyCalls = []InsertManyCall{}
 	m.PingQueue = []PingResponse{}
 	m.FindQueue = []FindResponse{}
 	m.FindOneQueue = []FindOneResponse{}
@@ -741,6 +813,8 @@ func (m *MockDatabase) Reset() {
 	m.DeleteOneQueue = []DeleteResponse{}
 	m.DeleteManyQueue = []DeleteResponse{}
 	m.CountQueue = []CountResponse{}
+	m.InsertOneQueue = []InsertResponse{}
+	m.InsertManyQueue = []InsertResponse{}
 }
 
 // ExpectPing sets up an expectation for Ping
@@ -883,8 +957,36 @@ func (m *MockDatabase) ExpectCount(count int64, err error) *MockDatabase {
 	return m
 }
 
+// ExpectInsertOne sets up an InsertOne response.
+func (m *MockDatabase) ExpectInsertOne(result any, err error) *MockDatabase {
+	m.InsertOneFunc = func(ctx context.Context, db string, collection string, document any, opts ...any) (any, error) {
+		return result, err
+	}
+	return m
+}
+
+// ExpectInsertMany sets up an InsertMany response.
+func (m *MockDatabase) ExpectInsertMany(result any, err error) *MockDatabase {
+	m.InsertManyFunc = func(ctx context.Context, db string, collection string, documents []any, opts ...any) (any, error) {
+		return result, err
+	}
+	return m
+}
+
 // QueueCount adds a Count response to the queue for sequential calls
 func (m *MockDatabase) QueueCount(count int64, err error) *MockDatabase {
 	m.CountQueue = append(m.CountQueue, CountResponse{Count: count, Err: err})
+	return m
+}
+
+// QueueInsertOne adds an InsertOne response to the queue.
+func (m *MockDatabase) QueueInsertOne(result any, err error) *MockDatabase {
+	m.InsertOneQueue = append(m.InsertOneQueue, InsertResponse{Result: result, Err: err})
+	return m
+}
+
+// QueueInsertMany adds an InsertMany response to the queue.
+func (m *MockDatabase) QueueInsertMany(result any, err error) *MockDatabase {
+	m.InsertManyQueue = append(m.InsertManyQueue, InsertResponse{Result: result, Err: err})
 	return m
 }
