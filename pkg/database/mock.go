@@ -20,6 +20,9 @@ type MockDatabase struct {
 	// FindOneFunc allows customizing FindOne behavior - returns a SingleResultInterface
 	FindOneFunc func(ctx context.Context, db string, collection string, filter any, opts ...any) SingleResultInterface
 
+	// FindOneAndUpdateFunc allows customizing atomic find-and-update behavior.
+	FindOneAndUpdateFunc func(ctx context.Context, db string, collection string, filter any, update any, opts ...any) SingleResultInterface
+
 	// UpdateOneFunc allows customizing UpdateOne behavior
 	UpdateOneFunc func(ctx context.Context, db string, collection string, filter any, update any, opts ...any) (UpdateResultInterface, error)
 
@@ -33,23 +36,27 @@ type MockDatabase struct {
 	CountFunc func(ctx context.Context, db string, collection string, filter any, opts ...any) (int64, error)
 
 	// Sequential response queues for multiple calls
-	PingQueue       []PingResponse
-	FindQueue       []FindResponse
-	FindOneQueue    []FindOneResponse
-	UpdateOneQueue  []UpdateOneResponse
-	DeleteOneQueue  []DeleteResponse
-	DeleteManyQueue []DeleteResponse
-	CountQueue      []CountResponse
+	PingQueue             []PingResponse
+	FindQueue             []FindResponse
+	FindOneQueue          []FindOneResponse
+	FindOneAndUpdateQueue []FindOneResponse
+	UpdateOneQueue        []UpdateOneResponse
+	DeleteOneQueue        []DeleteResponse
+	DeleteManyQueue       []DeleteResponse
+	CountQueue            []CountResponse
 
 	// Call tracking
-	PingCalls       []PingCall
-	FindCalls       []FindCall
-	FindOneCalls    []FindOneCall
-	UpdateOneCalls  []UpdateOneCall
-	DeleteOneCalls  []DeleteCall
-	DeleteManyCalls []DeleteCall
-	CountCalls      []CountCall
+	PingCalls             []PingCall
+	FindCalls             []FindCall
+	FindOneCalls          []FindOneCall
+	FindOneAndUpdateCalls []FindOneAndUpdateCall
+	UpdateOneCalls        []UpdateOneCall
+	DeleteOneCalls        []DeleteCall
+	DeleteManyCalls       []DeleteCall
+	CountCalls            []CountCall
 }
+
+var _ DatabaseInterface = (*MockDatabase)(nil)
 
 // MockSingleResult implements SingleResultInterface for testing
 type MockSingleResult struct {
@@ -193,6 +200,16 @@ type FindOneCall struct {
 	Opts       []any
 }
 
+// FindOneAndUpdateCall records an atomic find-and-update call.
+type FindOneAndUpdateCall struct {
+	Ctx        context.Context
+	Db         string
+	Collection string
+	Filter     any
+	Update     any
+	Opts       []any
+}
+
 // UpdateOneCall records a call to UpdateOne
 type UpdateOneCall struct {
 	Ctx        context.Context
@@ -239,6 +256,9 @@ func NewMockDatabase() *MockDatabase {
 		FindOneFunc: func(ctx context.Context, db string, collection string, filter any, opts ...any) SingleResultInterface {
 			return &MockSingleResult{result: nil, err: fmt.Errorf("no document found")}
 		},
+		FindOneAndUpdateFunc: func(ctx context.Context, db string, collection string, filter any, update any, opts ...any) SingleResultInterface {
+			return &MockSingleResult{result: nil, err: fmt.Errorf("no document found")}
+		},
 		UpdateOneFunc: func(ctx context.Context, db string, collection string, filter any, update any, opts ...any) (UpdateResultInterface, error) {
 			return &MockUpdateResult{matchedCount: 1, modifiedCount: 1}, nil
 		},
@@ -251,20 +271,22 @@ func NewMockDatabase() *MockDatabase {
 		CountFunc: func(ctx context.Context, db string, collection string, filter any, opts ...any) (int64, error) {
 			return 0, nil
 		},
-		PingCalls:       []PingCall{},
-		FindCalls:       []FindCall{},
-		FindOneCalls:    []FindOneCall{},
-		UpdateOneCalls:  []UpdateOneCall{},
-		DeleteOneCalls:  []DeleteCall{},
-		DeleteManyCalls: []DeleteCall{},
-		CountCalls:      []CountCall{},
-		PingQueue:       []PingResponse{},
-		FindQueue:       []FindResponse{},
-		FindOneQueue:    []FindOneResponse{},
-		UpdateOneQueue:  []UpdateOneResponse{},
-		DeleteOneQueue:  []DeleteResponse{},
-		DeleteManyQueue: []DeleteResponse{},
-		CountQueue:      []CountResponse{},
+		PingCalls:             []PingCall{},
+		FindCalls:             []FindCall{},
+		FindOneCalls:          []FindOneCall{},
+		FindOneAndUpdateCalls: []FindOneAndUpdateCall{},
+		UpdateOneCalls:        []UpdateOneCall{},
+		DeleteOneCalls:        []DeleteCall{},
+		DeleteManyCalls:       []DeleteCall{},
+		CountCalls:            []CountCall{},
+		PingQueue:             []PingResponse{},
+		FindQueue:             []FindResponse{},
+		FindOneQueue:          []FindOneResponse{},
+		FindOneAndUpdateQueue: []FindOneResponse{},
+		UpdateOneQueue:        []UpdateOneResponse{},
+		DeleteOneQueue:        []DeleteResponse{},
+		DeleteManyQueue:       []DeleteResponse{},
+		CountQueue:            []CountResponse{},
 	}
 }
 
@@ -375,6 +397,28 @@ func (m *MockDatabase) FindOne(ctx context.Context, db string, collection string
 	}
 
 	return &MockSingleResult{result: result, err: err}
+}
+
+// FindOneAndUpdate implements DatabaseInterface.
+func (m *MockDatabase) FindOneAndUpdate(ctx context.Context, db string, collection string, filter any, update any, opts ...any) SingleResultInterface {
+	m.FindOneAndUpdateCalls = append(m.FindOneAndUpdateCalls, FindOneAndUpdateCall{
+		Ctx:        ctx,
+		Db:         db,
+		Collection: collection,
+		Filter:     filter,
+		Update:     update,
+		Opts:       opts,
+	})
+
+	if len(m.FindOneAndUpdateQueue) > 0 {
+		response := m.FindOneAndUpdateQueue[0]
+		m.FindOneAndUpdateQueue = m.FindOneAndUpdateQueue[1:]
+		return &MockSingleResult{result: response.Result, err: response.Err}
+	}
+	if m.FindOneAndUpdateFunc != nil {
+		return m.FindOneAndUpdateFunc(ctx, db, collection, filter, update, opts...)
+	}
+	return &MockSingleResult{result: nil, err: fmt.Errorf("no document found")}
 }
 
 // copyResult copies src into dest using BSON marshaling (for mock testing)
@@ -590,6 +634,7 @@ func (m *MockDatabase) Reset() {
 	m.PingCalls = []PingCall{}
 	m.FindCalls = []FindCall{}
 	m.FindOneCalls = []FindOneCall{}
+	m.FindOneAndUpdateCalls = []FindOneAndUpdateCall{}
 	m.UpdateOneCalls = []UpdateOneCall{}
 	m.DeleteOneCalls = []DeleteCall{}
 	m.DeleteManyCalls = []DeleteCall{}
@@ -597,6 +642,7 @@ func (m *MockDatabase) Reset() {
 	m.PingQueue = []PingResponse{}
 	m.FindQueue = []FindResponse{}
 	m.FindOneQueue = []FindOneResponse{}
+	m.FindOneAndUpdateQueue = []FindOneResponse{}
 	m.UpdateOneQueue = []UpdateOneResponse{}
 	m.DeleteOneQueue = []DeleteResponse{}
 	m.DeleteManyQueue = []DeleteResponse{}
@@ -622,6 +668,14 @@ func (m *MockDatabase) ExpectFind(result any, err error) *MockDatabase {
 // ExpectFindOne sets up an expectation for FindOne
 func (m *MockDatabase) ExpectFindOne(result any, err error) *MockDatabase {
 	m.FindOneFunc = func(ctx context.Context, db string, collection string, filter any, opts ...any) SingleResultInterface {
+		return &MockSingleResult{result: result, err: err}
+	}
+	return m
+}
+
+// ExpectFindOneAndUpdate sets up an atomic find-and-update response.
+func (m *MockDatabase) ExpectFindOneAndUpdate(result any, err error) *MockDatabase {
+	m.FindOneAndUpdateFunc = func(ctx context.Context, db string, collection string, filter any, update any, opts ...any) SingleResultInterface {
 		return &MockSingleResult{result: result, err: err}
 	}
 	return m
@@ -680,6 +734,12 @@ func (m *MockDatabase) QueueFind(result any, err error) *MockDatabase {
 // QueueFindOne adds a FindOne response to the queue for sequential calls
 func (m *MockDatabase) QueueFindOne(result any, err error) *MockDatabase {
 	m.FindOneQueue = append(m.FindOneQueue, FindOneResponse{Result: result, Err: err})
+	return m
+}
+
+// QueueFindOneAndUpdate adds an atomic find-and-update response to the queue.
+func (m *MockDatabase) QueueFindOneAndUpdate(result any, err error) *MockDatabase {
+	m.FindOneAndUpdateQueue = append(m.FindOneAndUpdateQueue, FindOneResponse{Result: result, Err: err})
 	return m
 }
 

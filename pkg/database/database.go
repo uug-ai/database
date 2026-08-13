@@ -39,6 +39,7 @@ type DatabaseInterface interface {
 	Ping(context.Context) error
 	Find(ctx context.Context, db string, collection string, filter any, opts ...any) FindResultInterface
 	FindOne(ctx context.Context, db string, collection string, filter any, opts ...any) SingleResultInterface
+	FindOneAndUpdate(ctx context.Context, db string, collection string, filter any, update any, opts ...any) SingleResultInterface
 	UpdateOne(ctx context.Context, db string, collection string, filter any, update any, opts ...any) (UpdateResultInterface, error)
 	DeleteOne(ctx context.Context, db string, collection string, filter any, opts ...any) (DeleteResultInterface, error)
 	DeleteMany(ctx context.Context, db string, collection string, filter any, opts ...any) (DeleteResultInterface, error)
