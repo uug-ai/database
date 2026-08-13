@@ -911,3 +911,45 @@ func TestMockDatabaseInsert(t *testing.T) {
 		}
 	})
 }
+
+func TestMockDatabaseAggregate(t *testing.T) {
+	t.Run("ExpectAggregateTracksPipelineAndOptions", func(t *testing.T) {
+		mock := NewMockDatabase().ExpectAggregate([]bson.M{{"count": 2}}, nil)
+		pipeline := mongo.Pipeline{{{Key: "$group", Value: bson.D{{Key: "_id", Value: "$status"}}}}}
+		opts := options.Aggregate().SetAllowDiskUse(true)
+
+		var result []bson.M
+		err := mock.Aggregate(context.Background(), "testdb", "events", pipeline, opts).All(&result)
+		if err != nil {
+			t.Fatalf("Aggregate error: %v", err)
+		}
+		if len(result) != 1 || result[0]["count"] != float64(2) {
+			t.Fatalf("Aggregate result = %#v", result)
+		}
+		if len(mock.AggregateCalls) != 1 {
+			t.Fatalf("Aggregate calls = %d", len(mock.AggregateCalls))
+		}
+		call := mock.AggregateCalls[0]
+		if call.Db != "testdb" || call.Collection != "events" || len(call.Opts) != 1 || call.Opts[0] != opts {
+			t.Fatalf("unexpected Aggregate call: %#v", call)
+		}
+	})
+
+	t.Run("QueueAggregatePreservesErrorAndReset", func(t *testing.T) {
+		expectedErr := errors.New("aggregate failed")
+		mock := NewMockDatabase().QueueAggregate(nil, expectedErr)
+
+		result := mock.Aggregate(context.Background(), "testdb", "events", mongo.Pipeline{})
+		if !errors.Is(result.Err(), expectedErr) {
+			t.Fatalf("Aggregate error = %v, want %v", result.Err(), expectedErr)
+		}
+		if len(mock.AggregateCalls) != 1 {
+			t.Fatalf("Aggregate calls = %d", len(mock.AggregateCalls))
+		}
+
+		mock.Reset()
+		if len(mock.AggregateCalls) != 0 || len(mock.AggregateQueue) != 0 {
+			t.Fatal("expected Aggregate state to be cleared")
+		}
+	})
+}

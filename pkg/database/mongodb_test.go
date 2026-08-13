@@ -38,6 +38,16 @@ func TestInsertOptions(t *testing.T) {
 	})
 }
 
+func TestAggregateOptions(t *testing.T) {
+	first := moptions.Aggregate().SetAllowDiskUse(true)
+	second := moptions.Aggregate().SetBatchSize(100)
+
+	got := aggregateOptions(first, moptions.Find(), second)
+	if len(got) != 2 || got[0] != first || got[1] != second {
+		t.Fatalf("aggregate options = %#v", got)
+	}
+}
+
 func envVarsSet(keys ...string) bool {
 	for _, key := range keys {
 		if os.Getenv(key) == "" {
