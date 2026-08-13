@@ -13,7 +13,30 @@ import (
 
 	"github.com/uug-ai/models/pkg/models"
 	"go.mongodb.org/mongo-driver/bson"
+	moptions "go.mongodb.org/mongo-driver/mongo/options"
 )
+
+func TestInsertOptions(t *testing.T) {
+	t.Run("InsertOneRetainsSupportedOptions", func(t *testing.T) {
+		first := moptions.InsertOne().SetBypassDocumentValidation(true)
+		second := moptions.InsertOne().SetComment("insert-one")
+
+		got := insertOneOptions(first, moptions.Find(), second)
+		if len(got) != 2 || got[0] != first || got[1] != second {
+			t.Fatalf("insert one options = %#v", got)
+		}
+	})
+
+	t.Run("InsertManyRetainsSupportedOptions", func(t *testing.T) {
+		first := moptions.InsertMany().SetOrdered(false)
+		second := moptions.InsertMany().SetBypassDocumentValidation(true)
+
+		got := insertManyOptions(first, moptions.FindOne(), second)
+		if len(got) != 2 || got[0] != first || got[1] != second {
+			t.Fatalf("insert many options = %#v", got)
+		}
+	})
+}
 
 func envVarsSet(keys ...string) bool {
 	for _, key := range keys {
