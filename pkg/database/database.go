@@ -21,6 +21,16 @@ type FindResultInterface interface {
 	Err() error
 }
 
+// CursorResultInterface is the optional per-document iteration capability for
+// find results. Consumers use it when individual decode failures must be
+// handled without aborting the complete result set.
+type CursorResultInterface interface {
+	FindResultInterface
+	Next(ctx context.Context) bool
+	Decode(dest any) error
+	Close(ctx context.Context) error
+}
+
 // UpdateResultInterface defines the interface for update operation results
 type UpdateResultInterface interface {
 	MatchedCount() int64

@@ -382,6 +382,8 @@ type FindResult struct {
 	err    error
 }
 
+var _ CursorResultInterface = (*FindResult)(nil)
+
 // All decodes all results into the provided destination slice.
 // The dest parameter must be a pointer to a slice.
 func (fr *FindResult) All(dest any) error {
@@ -395,8 +397,35 @@ func (fr *FindResult) All(dest any) error {
 	return fr.cursor.All(fr.ctx, dest)
 }
 
+// Next advances to the next document in the result set.
+func (fr *FindResult) Next(ctx context.Context) bool {
+	return fr.err == nil && fr.cursor != nil && fr.cursor.Next(ctx)
+}
+
+// Decode decodes the current document selected by Next.
+func (fr *FindResult) Decode(dest any) error {
+	if fr.err != nil {
+		return fr.err
+	}
+	if fr.cursor == nil {
+		return fmt.Errorf("find cursor unavailable")
+	}
+	return fr.cursor.Decode(dest)
+}
+
+// Close closes the underlying MongoDB cursor.
+func (fr *FindResult) Close(ctx context.Context) error {
+	if fr.cursor == nil {
+		return fr.err
+	}
+	return fr.cursor.Close(ctx)
+}
+
 // Err returns any error that occurred during the query.
 func (fr *FindResult) Err() error {
+	if fr.err == nil && fr.cursor != nil {
+		return fr.cursor.Err()
+	}
 	return fr.err
 }
 
