@@ -5,6 +5,10 @@ import (
 	"errors"
 	"fmt"
 	"testing"
+
+	"go.mongodb.org/mongo-driver/bson"
+	"go.mongodb.org/mongo-driver/mongo"
+	"go.mongodb.org/mongo-driver/mongo/options"
 )
 
 func TestMockDatabase(t *testing.T) {
@@ -168,6 +172,48 @@ func TestMockDatabase(t *testing.T) {
 		mock.Reset()
 		if len(mock.FindOneAndUpdateCalls) != 0 || len(mock.FindOneAndUpdateQueue) != 0 {
 			t.Fatal("expected findOneAndUpdate state to be cleared")
+		}
+	})
+
+	t.Run("ExpectCreateIndexesWithCallTracking", func(t *testing.T) {
+		mock := NewMockDatabase().ExpectCreateIndexes([]string{"ownerId_1"}, nil)
+		indexes := []mongo.IndexModel{{Keys: bson.D{{Key: "ownerId", Value: 1}}}}
+		opts := options.CreateIndexes().SetMaxTime(10)
+
+		names, err := mock.CreateIndexes(context.Background(), "testdb", "organisation", indexes, opts)
+		if err != nil {
+			t.Fatalf("expected nil error, got %v", err)
+		}
+		if len(names) != 1 || names[0] != "ownerId_1" {
+			t.Fatalf("created index names = %v", names)
+		}
+		if len(mock.CreateIndexesCalls) != 1 {
+			t.Fatalf("expected 1 CreateIndexes call, got %d", len(mock.CreateIndexesCalls))
+		}
+		call := mock.CreateIndexesCalls[0]
+		if call.Db != "testdb" || call.Collection != "organisation" || len(call.Indexes) != 1 {
+			t.Fatalf("unexpected CreateIndexes call: %#v", call)
+		}
+		if len(call.Opts) != 1 || call.Opts[0] != opts {
+			t.Fatalf("CreateIndexes options = %#v", call.Opts)
+		}
+	})
+
+	t.Run("QueueCreateIndexesErrorAndReset", func(t *testing.T) {
+		expectedErr := errors.New("index creation failed")
+		mock := NewMockDatabase().QueueCreateIndexes(nil, expectedErr)
+
+		_, err := mock.CreateIndexes(context.Background(), "testdb", "organisation", nil)
+		if !errors.Is(err, expectedErr) {
+			t.Fatalf("expected index creation failure, got %v", err)
+		}
+		if len(mock.CreateIndexesCalls) != 1 {
+			t.Fatalf("expected 1 CreateIndexes call, got %d", len(mock.CreateIndexesCalls))
+		}
+
+		mock.Reset()
+		if len(mock.CreateIndexesCalls) != 0 || len(mock.CreateIndexesQueue) != 0 {
+			t.Fatal("expected CreateIndexes state to be cleared")
 		}
 	})
 

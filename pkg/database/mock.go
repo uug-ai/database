@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"go.mongodb.org/mongo-driver/bson"
+	"go.mongodb.org/mongo-driver/mongo"
 )
 
 // MockDatabase is a mock implementation of DatabaseInterface for testing
@@ -22,6 +23,9 @@ type MockDatabase struct {
 
 	// FindOneAndUpdateFunc allows customizing atomic find-and-update behavior.
 	FindOneAndUpdateFunc func(ctx context.Context, db string, collection string, filter any, update any, opts ...any) SingleResultInterface
+
+	// CreateIndexesFunc allows customizing index creation behavior.
+	CreateIndexesFunc func(ctx context.Context, db string, collection string, indexes []mongo.IndexModel, opts ...any) ([]string, error)
 
 	// UpdateOneFunc allows customizing UpdateOne behavior
 	UpdateOneFunc func(ctx context.Context, db string, collection string, filter any, update any, opts ...any) (UpdateResultInterface, error)
@@ -40,6 +44,7 @@ type MockDatabase struct {
 	FindQueue             []FindResponse
 	FindOneQueue          []FindOneResponse
 	FindOneAndUpdateQueue []FindOneResponse
+	CreateIndexesQueue    []CreateIndexesResponse
 	UpdateOneQueue        []UpdateOneResponse
 	DeleteOneQueue        []DeleteResponse
 	DeleteManyQueue       []DeleteResponse
@@ -50,6 +55,7 @@ type MockDatabase struct {
 	FindCalls             []FindCall
 	FindOneCalls          []FindOneCall
 	FindOneAndUpdateCalls []FindOneAndUpdateCall
+	CreateIndexesCalls    []CreateIndexesCall
 	UpdateOneCalls        []UpdateOneCall
 	DeleteOneCalls        []DeleteCall
 	DeleteManyCalls       []DeleteCall
@@ -57,6 +63,7 @@ type MockDatabase struct {
 }
 
 var _ DatabaseInterface = (*MockDatabase)(nil)
+var _ IndexManager = (*MockDatabase)(nil)
 
 // MockSingleResult implements SingleResultInterface for testing
 type MockSingleResult struct {
@@ -210,6 +217,21 @@ type FindOneAndUpdateCall struct {
 	Opts       []any
 }
 
+// CreateIndexesResponse represents a queued index creation response.
+type CreateIndexesResponse struct {
+	Names []string
+	Err   error
+}
+
+// CreateIndexesCall records an index creation call.
+type CreateIndexesCall struct {
+	Ctx        context.Context
+	Db         string
+	Collection string
+	Indexes    []mongo.IndexModel
+	Opts       []any
+}
+
 // UpdateOneCall records a call to UpdateOne
 type UpdateOneCall struct {
 	Ctx        context.Context
@@ -259,6 +281,9 @@ func NewMockDatabase() *MockDatabase {
 		FindOneAndUpdateFunc: func(ctx context.Context, db string, collection string, filter any, update any, opts ...any) SingleResultInterface {
 			return &MockSingleResult{result: nil, err: fmt.Errorf("no document found")}
 		},
+		CreateIndexesFunc: func(ctx context.Context, db string, collection string, indexes []mongo.IndexModel, opts ...any) ([]string, error) {
+			return nil, nil
+		},
 		UpdateOneFunc: func(ctx context.Context, db string, collection string, filter any, update any, opts ...any) (UpdateResultInterface, error) {
 			return &MockUpdateResult{matchedCount: 1, modifiedCount: 1}, nil
 		},
@@ -275,6 +300,7 @@ func NewMockDatabase() *MockDatabase {
 		FindCalls:             []FindCall{},
 		FindOneCalls:          []FindOneCall{},
 		FindOneAndUpdateCalls: []FindOneAndUpdateCall{},
+		CreateIndexesCalls:    []CreateIndexesCall{},
 		UpdateOneCalls:        []UpdateOneCall{},
 		DeleteOneCalls:        []DeleteCall{},
 		DeleteManyCalls:       []DeleteCall{},
@@ -283,6 +309,7 @@ func NewMockDatabase() *MockDatabase {
 		FindQueue:             []FindResponse{},
 		FindOneQueue:          []FindOneResponse{},
 		FindOneAndUpdateQueue: []FindOneResponse{},
+		CreateIndexesQueue:    []CreateIndexesResponse{},
 		UpdateOneQueue:        []UpdateOneResponse{},
 		DeleteOneQueue:        []DeleteResponse{},
 		DeleteManyQueue:       []DeleteResponse{},
@@ -419,6 +446,27 @@ func (m *MockDatabase) FindOneAndUpdate(ctx context.Context, db string, collecti
 		return m.FindOneAndUpdateFunc(ctx, db, collection, filter, update, opts...)
 	}
 	return &MockSingleResult{result: nil, err: fmt.Errorf("no document found")}
+}
+
+// CreateIndexes implements IndexManager.
+func (m *MockDatabase) CreateIndexes(ctx context.Context, db string, collection string, indexes []mongo.IndexModel, opts ...any) ([]string, error) {
+	m.CreateIndexesCalls = append(m.CreateIndexesCalls, CreateIndexesCall{
+		Ctx:        ctx,
+		Db:         db,
+		Collection: collection,
+		Indexes:    indexes,
+		Opts:       opts,
+	})
+
+	if len(m.CreateIndexesQueue) > 0 {
+		response := m.CreateIndexesQueue[0]
+		m.CreateIndexesQueue = m.CreateIndexesQueue[1:]
+		return response.Names, response.Err
+	}
+	if m.CreateIndexesFunc != nil {
+		return m.CreateIndexesFunc(ctx, db, collection, indexes, opts...)
+	}
+	return nil, nil
 }
 
 // copyResult copies src into dest using BSON marshaling (for mock testing)
@@ -635,6 +683,7 @@ func (m *MockDatabase) Reset() {
 	m.FindCalls = []FindCall{}
 	m.FindOneCalls = []FindOneCall{}
 	m.FindOneAndUpdateCalls = []FindOneAndUpdateCall{}
+	m.CreateIndexesCalls = []CreateIndexesCall{}
 	m.UpdateOneCalls = []UpdateOneCall{}
 	m.DeleteOneCalls = []DeleteCall{}
 	m.DeleteManyCalls = []DeleteCall{}
@@ -643,6 +692,7 @@ func (m *MockDatabase) Reset() {
 	m.FindQueue = []FindResponse{}
 	m.FindOneQueue = []FindOneResponse{}
 	m.FindOneAndUpdateQueue = []FindOneResponse{}
+	m.CreateIndexesQueue = []CreateIndexesResponse{}
 	m.UpdateOneQueue = []UpdateOneResponse{}
 	m.DeleteOneQueue = []DeleteResponse{}
 	m.DeleteManyQueue = []DeleteResponse{}
@@ -677,6 +727,14 @@ func (m *MockDatabase) ExpectFindOne(result any, err error) *MockDatabase {
 func (m *MockDatabase) ExpectFindOneAndUpdate(result any, err error) *MockDatabase {
 	m.FindOneAndUpdateFunc = func(ctx context.Context, db string, collection string, filter any, update any, opts ...any) SingleResultInterface {
 		return &MockSingleResult{result: result, err: err}
+	}
+	return m
+}
+
+// ExpectCreateIndexes sets up an index creation response.
+func (m *MockDatabase) ExpectCreateIndexes(names []string, err error) *MockDatabase {
+	m.CreateIndexesFunc = func(ctx context.Context, db string, collection string, indexes []mongo.IndexModel, opts ...any) ([]string, error) {
+		return names, err
 	}
 	return m
 }
@@ -740,6 +798,12 @@ func (m *MockDatabase) QueueFindOne(result any, err error) *MockDatabase {
 // QueueFindOneAndUpdate adds an atomic find-and-update response to the queue.
 func (m *MockDatabase) QueueFindOneAndUpdate(result any, err error) *MockDatabase {
 	m.FindOneAndUpdateQueue = append(m.FindOneAndUpdateQueue, FindOneResponse{Result: result, Err: err})
+	return m
+}
+
+// QueueCreateIndexes adds an index creation response to the queue.
+func (m *MockDatabase) QueueCreateIndexes(names []string, err error) *MockDatabase {
+	m.CreateIndexesQueue = append(m.CreateIndexesQueue, CreateIndexesResponse{Names: names, Err: err})
 	return m
 }
 
