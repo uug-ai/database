@@ -232,6 +232,7 @@ type MongoClient struct {
 var _ DatabaseInterface = (*MongoClient)(nil)
 var _ IndexManager = (*MongoClient)(nil)
 var _ Aggregator = (*MongoClient)(nil)
+var _ MultiUpdater = (*MongoClient)(nil)
 
 // NewMongoClient creates a new MongoClient with the provided MongoDB settings
 func NewMongoClient(options *MongoOptions) (DatabaseInterface, error) {
@@ -644,20 +645,37 @@ func (m *MongoClient) Count(ctx context.Context, db string, collection string, f
 func (m *MongoClient) UpdateOne(ctx context.Context, db string, collection string, filter any, update any, opts ...any) (UpdateResultInterface, error) {
 	coll := m.Client.Database(db).Collection(collection)
 
-	// Convert opts to mongo.UpdateOptions if provided
+	result, err := coll.UpdateOne(ctx, filter, update, updateOptions(opts...)...)
+	if err != nil {
+		return nil, err
+	}
+
+	return &UpdateResult{result: result}, nil
+}
+
+// UpdateMany executes an update query on all matching documents in the
+// specified collection. Supports *moptions.UpdateOptions in opts.
+func (m *MongoClient) UpdateMany(ctx context.Context, db string, collection string, filter any, update any, opts ...any) (UpdateResultInterface, error) {
+	coll := m.Client.Database(db).Collection(collection)
+
+	result, err := coll.UpdateMany(ctx, filter, update, updateOptions(opts...)...)
+	if err != nil {
+		return nil, err
+	}
+
+	return &UpdateResult{result: result}, nil
+}
+
+// updateOptions retains supported MongoDB options and ignores unrelated
+// wrapper options for both single- and multi-document updates.
+func updateOptions(opts ...any) []*moptions.UpdateOptions {
 	var updateOpts []*moptions.UpdateOptions
 	for _, opt := range opts {
 		if uo, ok := opt.(*moptions.UpdateOptions); ok {
 			updateOpts = append(updateOpts, uo)
 		}
 	}
-
-	result, err := coll.UpdateOne(ctx, filter, update, updateOpts...)
-	if err != nil {
-		return nil, err
-	}
-
-	return &UpdateResult{result: result}, nil
+	return updateOpts
 }
 
 // DeleteOne executes a delete query on a single document in the specified database and collection.

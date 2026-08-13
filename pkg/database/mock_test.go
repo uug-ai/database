@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"go.mongodb.org/mongo-driver/bson"
+	"go.mongodb.org/mongo-driver/bson/primitive"
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
 )
@@ -950,6 +951,49 @@ func TestMockDatabaseAggregate(t *testing.T) {
 		mock.Reset()
 		if len(mock.AggregateCalls) != 0 || len(mock.AggregateQueue) != 0 {
 			t.Fatal("expected Aggregate state to be cleared")
+		}
+	})
+}
+
+func TestMockDatabaseUpdateMany(t *testing.T) {
+	t.Run("ExpectUpdateManyTracksFilterUpdateAndOptions", func(t *testing.T) {
+		upsertedID := primitive.NewObjectID()
+		mock := NewMockDatabase().ExpectUpdateMany(5, 4, 1, upsertedID, nil)
+		filter := bson.M{"status": "pending"}
+		update := bson.M{"$set": bson.M{"status": "processed"}}
+		opts := options.Update().SetUpsert(true)
+
+		result, err := mock.UpdateMany(context.Background(), "testdb", "events", filter, update, opts)
+		if err != nil {
+			t.Fatalf("UpdateMany error: %v", err)
+		}
+		if result.MatchedCount() != 5 || result.ModifiedCount() != 4 || result.UpsertedCount() != 1 || result.UpsertedID() != upsertedID {
+			t.Fatalf("UpdateMany result = (%d, %d, %d, %#v)", result.MatchedCount(), result.ModifiedCount(), result.UpsertedCount(), result.UpsertedID())
+		}
+		if len(mock.UpdateManyCalls) != 1 {
+			t.Fatalf("UpdateMany calls = %d", len(mock.UpdateManyCalls))
+		}
+		call := mock.UpdateManyCalls[0]
+		if call.Db != "testdb" || call.Collection != "events" || len(call.Opts) != 1 || call.Opts[0] != opts {
+			t.Fatalf("unexpected UpdateMany call: %#v", call)
+		}
+	})
+
+	t.Run("QueueUpdateManyPreservesErrorAndReset", func(t *testing.T) {
+		expectedErr := errors.New("update many failed")
+		mock := NewMockDatabase().QueueUpdateMany(0, 0, 0, nil, expectedErr)
+
+		result, err := mock.UpdateMany(context.Background(), "testdb", "events", bson.M{}, bson.M{"$set": bson.M{"active": false}})
+		if !errors.Is(err, expectedErr) || result != nil {
+			t.Fatalf("UpdateMany result = %#v, error = %v", result, err)
+		}
+		if len(mock.UpdateManyCalls) != 1 {
+			t.Fatalf("UpdateMany calls = %d", len(mock.UpdateManyCalls))
+		}
+
+		mock.Reset()
+		if len(mock.UpdateManyCalls) != 0 || len(mock.UpdateManyQueue) != 0 {
+			t.Fatal("expected UpdateMany state to be cleared")
 		}
 	})
 }

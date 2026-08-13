@@ -48,6 +48,16 @@ func TestAggregateOptions(t *testing.T) {
 	}
 }
 
+func TestUpdateOptions(t *testing.T) {
+	first := moptions.Update().SetUpsert(true)
+	second := moptions.Update().SetArrayFilters(moptions.ArrayFilters{Filters: []any{bson.M{"item.active": true}}})
+
+	got := updateOptions(first, moptions.FindOne(), second)
+	if len(got) != 2 || got[0] != first || got[1] != second {
+		t.Fatalf("update options = %#v", got)
+	}
+}
+
 func envVarsSet(keys ...string) bool {
 	for _, key := range keys {
 		if os.Getenv(key) == "" {
