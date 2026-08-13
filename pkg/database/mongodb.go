@@ -229,6 +229,8 @@ type MongoClient struct {
 	Options *MongoOptions
 }
 
+var _ DatabaseInterface = (*MongoClient)(nil)
+
 // NewMongoClient creates a new MongoClient with the provided MongoDB settings
 func NewMongoClient(options *MongoOptions) (DatabaseInterface, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(options.Timeout)*time.Millisecond)
@@ -419,6 +421,23 @@ func (m *MongoClient) FindOne(ctx context.Context, db string, collection string,
 	}
 
 	return &SingleResult{result: coll.FindOne(ctx, filter, findOneOpts...)}
+}
+
+// FindOneAndUpdate atomically updates one matching document and returns the
+// document selected by the supplied options. Callers that need the updated
+// document should pass options.FindOneAndUpdate().SetReturnDocument(options.After).
+// Supports *moptions.FindOneAndUpdateOptions in opts.
+func (m *MongoClient) FindOneAndUpdate(ctx context.Context, db string, collection string, filter any, update any, opts ...any) SingleResultInterface {
+	coll := m.Client.Database(db).Collection(collection)
+
+	var findOneAndUpdateOpts []*moptions.FindOneAndUpdateOptions
+	for _, opt := range opts {
+		if fo, ok := opt.(*moptions.FindOneAndUpdateOptions); ok {
+			findOneAndUpdateOpts = append(findOneAndUpdateOpts, fo)
+		}
+	}
+
+	return &SingleResult{result: coll.FindOneAndUpdate(ctx, filter, update, findOneAndUpdateOpts...)}
 }
 
 // InsertOne inserts a single document into the specified database and collection

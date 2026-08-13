@@ -130,6 +130,47 @@ func TestMockDatabase(t *testing.T) {
 		}
 	})
 
+	t.Run("ExpectFindOneAndUpdateWithResult", func(t *testing.T) {
+		mock := NewMockDatabase()
+		expected := map[string]any{"id": 1, "name": "Updated"}
+		filter := map[string]any{"id": 1}
+		update := map[string]any{"$set": map[string]any{"name": "Updated"}}
+		mock.ExpectFindOneAndUpdate(expected, nil)
+
+		var result map[string]any
+		err := mock.FindOneAndUpdate(context.Background(), "testdb", "users", filter, update).Into(&result)
+		if err != nil {
+			t.Fatalf("expected nil error, got %v", err)
+		}
+		if result["name"] != "Updated" {
+			t.Fatalf("expected updated document, got %#v", result)
+		}
+		if len(mock.FindOneAndUpdateCalls) != 1 {
+			t.Fatalf("expected 1 findOneAndUpdate call, got %d", len(mock.FindOneAndUpdateCalls))
+		}
+		call := mock.FindOneAndUpdateCalls[0]
+		if call.Db != "testdb" || call.Collection != "users" {
+			t.Fatalf("unexpected call target %s.%s", call.Db, call.Collection)
+		}
+	})
+
+	t.Run("QueueFindOneAndUpdateErrorAndReset", func(t *testing.T) {
+		mock := NewMockDatabase().QueueFindOneAndUpdate(nil, errors.New("update failed"))
+
+		err := mock.FindOneAndUpdate(context.Background(), "testdb", "users", map[string]any{"id": 1}, map[string]any{"$set": map[string]any{"name": "Updated"}}).Err()
+		if err == nil || err.Error() != "update failed" {
+			t.Fatalf("expected update failure, got %v", err)
+		}
+		if len(mock.FindOneAndUpdateCalls) != 1 {
+			t.Fatalf("expected 1 findOneAndUpdate call, got %d", len(mock.FindOneAndUpdateCalls))
+		}
+
+		mock.Reset()
+		if len(mock.FindOneAndUpdateCalls) != 0 || len(mock.FindOneAndUpdateQueue) != 0 {
+			t.Fatal("expected findOneAndUpdate state to be cleared")
+		}
+	})
+
 	t.Run("CustomFindFunction", func(t *testing.T) {
 		mock := NewMockDatabase()
 
