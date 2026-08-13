@@ -34,6 +34,9 @@ type MockDatabase struct {
 	// UpdateOneFunc allows customizing UpdateOne behavior
 	UpdateOneFunc func(ctx context.Context, db string, collection string, filter any, update any, opts ...any) (UpdateResultInterface, error)
 
+	// UpdateManyFunc allows customizing UpdateMany behavior.
+	UpdateManyFunc func(ctx context.Context, db string, collection string, filter any, update any, opts ...any) (UpdateResultInterface, error)
+
 	// DeleteOneFunc allows customizing DeleteOne behavior
 	DeleteOneFunc func(ctx context.Context, db string, collection string, filter any, opts ...any) (DeleteResultInterface, error)
 
@@ -56,6 +59,7 @@ type MockDatabase struct {
 	FindOneAndUpdateQueue []FindOneResponse
 	CreateIndexesQueue    []CreateIndexesResponse
 	UpdateOneQueue        []UpdateOneResponse
+	UpdateManyQueue       []UpdateManyResponse
 	DeleteOneQueue        []DeleteResponse
 	DeleteManyQueue       []DeleteResponse
 	CountQueue            []CountResponse
@@ -70,6 +74,7 @@ type MockDatabase struct {
 	FindOneAndUpdateCalls []FindOneAndUpdateCall
 	CreateIndexesCalls    []CreateIndexesCall
 	UpdateOneCalls        []UpdateOneCall
+	UpdateManyCalls       []UpdateManyCall
 	DeleteOneCalls        []DeleteCall
 	DeleteManyCalls       []DeleteCall
 	CountCalls            []CountCall
@@ -81,6 +86,7 @@ type MockDatabase struct {
 var _ DatabaseInterface = (*MockDatabase)(nil)
 var _ IndexManager = (*MockDatabase)(nil)
 var _ Aggregator = (*MockDatabase)(nil)
+var _ MultiUpdater = (*MockDatabase)(nil)
 
 // MockSingleResult implements SingleResultInterface for testing
 type MockSingleResult struct {
@@ -238,6 +244,15 @@ type UpdateOneResponse struct {
 	Err           error
 }
 
+// UpdateManyResponse represents a queued UpdateMany response.
+type UpdateManyResponse struct {
+	MatchedCount  int64
+	ModifiedCount int64
+	UpsertedCount int64
+	UpsertedID    any
+	Err           error
+}
+
 // DeleteResponse represents a queued response for delete operations
 type DeleteResponse struct {
 	DeletedCount int64
@@ -303,6 +318,16 @@ type AggregateCall struct {
 
 // UpdateOneCall records a call to UpdateOne
 type UpdateOneCall struct {
+	Ctx        context.Context
+	Db         string
+	Collection string
+	Filter     any
+	Update     any
+	Opts       []any
+}
+
+// UpdateManyCall records a call to UpdateMany.
+type UpdateManyCall struct {
 	Ctx        context.Context
 	Db         string
 	Collection string
@@ -383,6 +408,9 @@ func NewMockDatabase() *MockDatabase {
 		UpdateOneFunc: func(ctx context.Context, db string, collection string, filter any, update any, opts ...any) (UpdateResultInterface, error) {
 			return &MockUpdateResult{matchedCount: 1, modifiedCount: 1}, nil
 		},
+		UpdateManyFunc: func(ctx context.Context, db string, collection string, filter any, update any, opts ...any) (UpdateResultInterface, error) {
+			return &MockUpdateResult{}, nil
+		},
 		DeleteOneFunc: func(ctx context.Context, db string, collection string, filter any, opts ...any) (DeleteResultInterface, error) {
 			return &MockDeleteResult{deletedCount: 1}, nil
 		},
@@ -398,6 +426,7 @@ func NewMockDatabase() *MockDatabase {
 		FindOneAndUpdateCalls: []FindOneAndUpdateCall{},
 		CreateIndexesCalls:    []CreateIndexesCall{},
 		UpdateOneCalls:        []UpdateOneCall{},
+		UpdateManyCalls:       []UpdateManyCall{},
 		DeleteOneCalls:        []DeleteCall{},
 		DeleteManyCalls:       []DeleteCall{},
 		CountCalls:            []CountCall{},
@@ -410,6 +439,7 @@ func NewMockDatabase() *MockDatabase {
 		FindOneAndUpdateQueue: []FindOneResponse{},
 		CreateIndexesQueue:    []CreateIndexesResponse{},
 		UpdateOneQueue:        []UpdateOneResponse{},
+		UpdateManyQueue:       []UpdateManyResponse{},
 		DeleteOneQueue:        []DeleteResponse{},
 		DeleteManyQueue:       []DeleteResponse{},
 		CountQueue:            []CountResponse{},
@@ -714,6 +744,36 @@ func (m *MockDatabase) UpdateOne(ctx context.Context, db string, collection stri
 	return &MockUpdateResult{matchedCount: 1, modifiedCount: 1}, nil
 }
 
+// UpdateMany implements MultiUpdater.
+func (m *MockDatabase) UpdateMany(ctx context.Context, db string, collection string, filter any, update any, opts ...any) (UpdateResultInterface, error) {
+	m.UpdateManyCalls = append(m.UpdateManyCalls, UpdateManyCall{
+		Ctx:        ctx,
+		Db:         db,
+		Collection: collection,
+		Filter:     filter,
+		Update:     update,
+		Opts:       opts,
+	})
+
+	if len(m.UpdateManyQueue) > 0 {
+		response := m.UpdateManyQueue[0]
+		m.UpdateManyQueue = m.UpdateManyQueue[1:]
+		if response.Err != nil {
+			return nil, response.Err
+		}
+		return &MockUpdateResult{
+			matchedCount:  response.MatchedCount,
+			modifiedCount: response.ModifiedCount,
+			upsertedCount: response.UpsertedCount,
+			upsertedID:    response.UpsertedID,
+		}, nil
+	}
+	if m.UpdateManyFunc != nil {
+		return m.UpdateManyFunc(ctx, db, collection, filter, update, opts...)
+	}
+	return &MockUpdateResult{}, nil
+}
+
 // DeleteOne implements DatabaseInterface
 func (m *MockDatabase) DeleteOne(ctx context.Context, db string, collection string, filter any, opts ...any) (DeleteResultInterface, error) {
 	m.DeleteOneCalls = append(m.DeleteOneCalls, DeleteCall{
@@ -840,6 +900,7 @@ func (m *MockDatabase) Reset() {
 	m.FindOneAndUpdateCalls = []FindOneAndUpdateCall{}
 	m.CreateIndexesCalls = []CreateIndexesCall{}
 	m.UpdateOneCalls = []UpdateOneCall{}
+	m.UpdateManyCalls = []UpdateManyCall{}
 	m.DeleteOneCalls = []DeleteCall{}
 	m.DeleteManyCalls = []DeleteCall{}
 	m.CountCalls = []CountCall{}
@@ -852,6 +913,7 @@ func (m *MockDatabase) Reset() {
 	m.FindOneAndUpdateQueue = []FindOneResponse{}
 	m.CreateIndexesQueue = []CreateIndexesResponse{}
 	m.UpdateOneQueue = []UpdateOneResponse{}
+	m.UpdateManyQueue = []UpdateManyResponse{}
 	m.DeleteOneQueue = []DeleteResponse{}
 	m.DeleteManyQueue = []DeleteResponse{}
 	m.CountQueue = []CountResponse{}
@@ -911,6 +973,22 @@ func (m *MockDatabase) ExpectAggregate(result any, err error) *MockDatabase {
 // ExpectUpdateOne sets up an expectation for UpdateOne
 func (m *MockDatabase) ExpectUpdateOne(matchedCount, modifiedCount, upsertedCount int64, upsertedID any, err error) *MockDatabase {
 	m.UpdateOneFunc = func(ctx context.Context, db string, collection string, filter any, update any, opts ...any) (UpdateResultInterface, error) {
+		if err != nil {
+			return nil, err
+		}
+		return &MockUpdateResult{
+			matchedCount:  matchedCount,
+			modifiedCount: modifiedCount,
+			upsertedCount: upsertedCount,
+			upsertedID:    upsertedID,
+		}, nil
+	}
+	return m
+}
+
+// ExpectUpdateMany sets up an UpdateMany response.
+func (m *MockDatabase) ExpectUpdateMany(matchedCount, modifiedCount, upsertedCount int64, upsertedID any, err error) *MockDatabase {
+	m.UpdateManyFunc = func(ctx context.Context, db string, collection string, filter any, update any, opts ...any) (UpdateResultInterface, error) {
 		if err != nil {
 			return nil, err
 		}
@@ -985,6 +1063,18 @@ func (m *MockDatabase) QueueAggregate(result any, err error) *MockDatabase {
 // QueueUpdateOne adds an UpdateOne response to the queue for sequential calls
 func (m *MockDatabase) QueueUpdateOne(matchedCount, modifiedCount, upsertedCount int64, upsertedID any, err error) *MockDatabase {
 	m.UpdateOneQueue = append(m.UpdateOneQueue, UpdateOneResponse{
+		MatchedCount:  matchedCount,
+		ModifiedCount: modifiedCount,
+		UpsertedCount: upsertedCount,
+		UpsertedID:    upsertedID,
+		Err:           err,
+	})
+	return m
+}
+
+// QueueUpdateMany adds an UpdateMany response to the queue.
+func (m *MockDatabase) QueueUpdateMany(matchedCount, modifiedCount, upsertedCount int64, upsertedID any, err error) *MockDatabase {
+	m.UpdateManyQueue = append(m.UpdateManyQueue, UpdateManyResponse{
 		MatchedCount:  matchedCount,
 		ModifiedCount: modifiedCount,
 		UpsertedCount: upsertedCount,
