@@ -230,6 +230,7 @@ type MongoClient struct {
 }
 
 var _ DatabaseInterface = (*MongoClient)(nil)
+var _ IndexManager = (*MongoClient)(nil)
 
 // NewMongoClient creates a new MongoClient with the provided MongoDB settings
 func NewMongoClient(options *MongoOptions) (DatabaseInterface, error) {
@@ -355,6 +356,23 @@ func (m *MongoClient) Disconnect(ctx context.Context) error {
 // GetTimeout returns the timeout duration for the MongoDB client
 func (m *MongoClient) GetTimeout() time.Duration {
 	return time.Duration(m.Options.Timeout) * time.Millisecond
+}
+
+// CreateIndexes creates the supplied indexes on a collection. Index
+// definitions remain a consumer concern; this method only exposes MongoDB's
+// idempotent CreateMany operation through the shared client.
+// Supports *moptions.CreateIndexesOptions in opts.
+func (m *MongoClient) CreateIndexes(ctx context.Context, db string, collection string, indexes []mongo.IndexModel, opts ...any) ([]string, error) {
+	coll := m.Client.Database(db).Collection(collection)
+
+	var createIndexesOpts []*moptions.CreateIndexesOptions
+	for _, opt := range opts {
+		if io, ok := opt.(*moptions.CreateIndexesOptions); ok {
+			createIndexesOpts = append(createIndexesOpts, io)
+		}
+	}
+
+	return coll.Indexes().CreateMany(ctx, indexes, createIndexesOpts...)
 }
 
 // FindResult wraps a MongoDB cursor for fluent API usage
