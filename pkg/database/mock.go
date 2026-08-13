@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"reflect"
 	"time"
 
 	"go.mongodb.org/mongo-driver/bson"
@@ -86,9 +87,14 @@ type MockDeleteResult struct {
 
 // MockFindResult implements FindResultInterface for testing
 type MockFindResult struct {
-	results any
-	err     error
+	results    any
+	err        error
+	index      int
+	current    any
+	currentSet bool
 }
+
+var _ CursorResultInterface = (*MockFindResult)(nil)
 
 // All decodes all results into dest
 func (m *MockFindResult) All(dest any) error {
@@ -99,6 +105,44 @@ func (m *MockFindResult) All(dest any) error {
 		return nil
 	}
 	return copySliceResult(m.results, dest)
+}
+
+// Next advances to the next configured mock result.
+func (m *MockFindResult) Next(context.Context) bool {
+	if m.err != nil || m.results == nil {
+		return false
+	}
+
+	results := reflect.ValueOf(m.results)
+	if results.Kind() != reflect.Slice && results.Kind() != reflect.Array {
+		return false
+	}
+	if m.index >= results.Len() {
+		m.current = nil
+		m.currentSet = false
+		return false
+	}
+
+	m.current = results.Index(m.index).Interface()
+	m.currentSet = true
+	m.index++
+	return true
+}
+
+// Decode decodes the current configured mock result.
+func (m *MockFindResult) Decode(dest any) error {
+	if m.err != nil {
+		return m.err
+	}
+	if !m.currentSet {
+		return fmt.Errorf("find cursor has no current document")
+	}
+	return copyResult(m.current, dest)
+}
+
+// Close closes the mock cursor.
+func (m *MockFindResult) Close(context.Context) error {
+	return m.err
 }
 
 // Err returns any error

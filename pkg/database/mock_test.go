@@ -89,6 +89,62 @@ func TestMockDatabase(t *testing.T) {
 		}
 	})
 
+	t.Run("CursorIterationSkipsIndividualDecodeError", func(t *testing.T) {
+		mock := NewMockDatabase().QueueFind([]bson.M{
+			{"name": "first"},
+			{"name": []string{"invalid"}},
+			{"name": "third"},
+		}, nil)
+
+		result := mock.Find(context.Background(), "testdb", "users", bson.M{})
+		cursor, ok := result.(CursorResultInterface)
+		if !ok {
+			t.Fatal("mock find result must support cursor iteration")
+		}
+
+		var names []string
+		decodeErrors := 0
+		for cursor.Next(context.Background()) {
+			var document struct {
+				Name string `bson:"name"`
+			}
+			if err := cursor.Decode(&document); err != nil {
+				decodeErrors++
+				continue
+			}
+			names = append(names, document.Name)
+		}
+		if err := cursor.Err(); err != nil {
+			t.Fatalf("cursor error: %v", err)
+		}
+		if err := cursor.Close(context.Background()); err != nil {
+			t.Fatalf("close cursor: %v", err)
+		}
+		if decodeErrors != 1 || len(names) != 2 || names[0] != "first" || names[1] != "third" {
+			t.Fatalf("decode errors = %d, names = %v", decodeErrors, names)
+		}
+	})
+
+	t.Run("CursorIterationPreservesFindError", func(t *testing.T) {
+		expectedErr := errors.New("find failed")
+		result := NewMockDatabase().QueueFind(nil, expectedErr).
+			Find(context.Background(), "testdb", "users", bson.M{})
+		cursor := result.(CursorResultInterface)
+
+		if cursor.Next(context.Background()) {
+			t.Fatal("failed find must not have a next document")
+		}
+		if !errors.Is(cursor.Err(), expectedErr) {
+			t.Fatalf("cursor error = %v, want %v", cursor.Err(), expectedErr)
+		}
+		if !errors.Is(cursor.Decode(&bson.M{}), expectedErr) {
+			t.Fatalf("decode error = %v, want %v", cursor.Decode(&bson.M{}), expectedErr)
+		}
+		if !errors.Is(cursor.Close(context.Background()), expectedErr) {
+			t.Fatalf("close error = %v, want %v", cursor.Close(context.Background()), expectedErr)
+		}
+	})
+
 	t.Run("ExpectFindOneWithResult", func(t *testing.T) {
 		mock := NewMockDatabase()
 		expectedUser := map[string]any{
