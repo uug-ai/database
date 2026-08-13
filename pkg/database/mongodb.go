@@ -231,6 +231,7 @@ type MongoClient struct {
 
 var _ DatabaseInterface = (*MongoClient)(nil)
 var _ IndexManager = (*MongoClient)(nil)
+var _ Aggregator = (*MongoClient)(nil)
 
 // NewMongoClient creates a new MongoClient with the provided MongoDB settings
 func NewMongoClient(options *MongoOptions) (DatabaseInterface, error) {
@@ -448,6 +449,28 @@ func (m *MongoClient) Find(ctx context.Context, db string, collection string, fi
 
 	cursor, err := coll.Find(ctx, filter, findOpts...)
 	return &FindResult{cursor: cursor, ctx: ctx, err: err}
+}
+
+// Aggregate executes an aggregation pipeline on the specified collection.
+// Results support both slice-wide decoding and optional cursor iteration.
+// Supports *moptions.AggregateOptions in opts.
+func (m *MongoClient) Aggregate(ctx context.Context, db string, collection string, pipeline any, opts ...any) FindResultInterface {
+	coll := m.Client.Database(db).Collection(collection)
+
+	cursor, err := coll.Aggregate(ctx, pipeline, aggregateOptions(opts...)...)
+	return &FindResult{cursor: cursor, ctx: ctx, err: err}
+}
+
+// aggregateOptions retains supported MongoDB options and ignores unrelated
+// wrapper options, consistent with the other optional capabilities.
+func aggregateOptions(opts ...any) []*moptions.AggregateOptions {
+	var aggregateOpts []*moptions.AggregateOptions
+	for _, opt := range opts {
+		if ao, ok := opt.(*moptions.AggregateOptions); ok {
+			aggregateOpts = append(aggregateOpts, ao)
+		}
+	}
+	return aggregateOpts
 }
 
 // FindOne executes a findOne query on the specified database and collection.

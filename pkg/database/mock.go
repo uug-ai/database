@@ -28,6 +28,9 @@ type MockDatabase struct {
 	// CreateIndexesFunc allows customizing index creation behavior.
 	CreateIndexesFunc func(ctx context.Context, db string, collection string, indexes []mongo.IndexModel, opts ...any) ([]string, error)
 
+	// AggregateFunc allows customizing Aggregate behavior.
+	AggregateFunc func(ctx context.Context, db string, collection string, pipeline any, opts ...any) FindResultInterface
+
 	// UpdateOneFunc allows customizing UpdateOne behavior
 	UpdateOneFunc func(ctx context.Context, db string, collection string, filter any, update any, opts ...any) (UpdateResultInterface, error)
 
@@ -58,6 +61,7 @@ type MockDatabase struct {
 	CountQueue            []CountResponse
 	InsertOneQueue        []InsertResponse
 	InsertManyQueue       []InsertResponse
+	AggregateQueue        []FindResponse
 
 	// Call tracking
 	PingCalls             []PingCall
@@ -71,10 +75,12 @@ type MockDatabase struct {
 	CountCalls            []CountCall
 	InsertOneCalls        []InsertOneCall
 	InsertManyCalls       []InsertManyCall
+	AggregateCalls        []AggregateCall
 }
 
 var _ DatabaseInterface = (*MockDatabase)(nil)
 var _ IndexManager = (*MockDatabase)(nil)
+var _ Aggregator = (*MockDatabase)(nil)
 
 // MockSingleResult implements SingleResultInterface for testing
 type MockSingleResult struct {
@@ -286,6 +292,15 @@ type CreateIndexesCall struct {
 	Opts       []any
 }
 
+// AggregateCall records an aggregation call.
+type AggregateCall struct {
+	Ctx        context.Context
+	Db         string
+	Collection string
+	Pipeline   any
+	Opts       []any
+}
+
 // UpdateOneCall records a call to UpdateOne
 type UpdateOneCall struct {
 	Ctx        context.Context
@@ -362,6 +377,9 @@ func NewMockDatabase() *MockDatabase {
 		CreateIndexesFunc: func(ctx context.Context, db string, collection string, indexes []mongo.IndexModel, opts ...any) ([]string, error) {
 			return nil, nil
 		},
+		AggregateFunc: func(ctx context.Context, db string, collection string, pipeline any, opts ...any) FindResultInterface {
+			return &MockFindResult{results: []any{}, err: nil}
+		},
 		UpdateOneFunc: func(ctx context.Context, db string, collection string, filter any, update any, opts ...any) (UpdateResultInterface, error) {
 			return &MockUpdateResult{matchedCount: 1, modifiedCount: 1}, nil
 		},
@@ -385,6 +403,7 @@ func NewMockDatabase() *MockDatabase {
 		CountCalls:            []CountCall{},
 		InsertOneCalls:        []InsertOneCall{},
 		InsertManyCalls:       []InsertManyCall{},
+		AggregateCalls:        []AggregateCall{},
 		PingQueue:             []PingResponse{},
 		FindQueue:             []FindResponse{},
 		FindOneQueue:          []FindOneResponse{},
@@ -396,6 +415,7 @@ func NewMockDatabase() *MockDatabase {
 		CountQueue:            []CountResponse{},
 		InsertOneQueue:        []InsertResponse{},
 		InsertManyQueue:       []InsertResponse{},
+		AggregateQueue:        []FindResponse{},
 	}
 }
 
@@ -465,6 +485,27 @@ func (m *MockDatabase) Find(ctx context.Context, db string, collection string, f
 	}
 
 	return &MockFindResult{results: result, err: err}
+}
+
+// Aggregate implements Aggregator.
+func (m *MockDatabase) Aggregate(ctx context.Context, db string, collection string, pipeline any, opts ...any) FindResultInterface {
+	m.AggregateCalls = append(m.AggregateCalls, AggregateCall{
+		Ctx:        ctx,
+		Db:         db,
+		Collection: collection,
+		Pipeline:   pipeline,
+		Opts:       opts,
+	})
+
+	if len(m.AggregateQueue) > 0 {
+		response := m.AggregateQueue[0]
+		m.AggregateQueue = m.AggregateQueue[1:]
+		return &MockFindResult{results: response.Result, err: response.Err}
+	}
+	if m.AggregateFunc != nil {
+		return m.AggregateFunc(ctx, db, collection, pipeline, opts...)
+	}
+	return &MockFindResult{results: []any{}, err: nil}
 }
 
 // FindOne implements DatabaseInterface
@@ -804,6 +845,7 @@ func (m *MockDatabase) Reset() {
 	m.CountCalls = []CountCall{}
 	m.InsertOneCalls = []InsertOneCall{}
 	m.InsertManyCalls = []InsertManyCall{}
+	m.AggregateCalls = []AggregateCall{}
 	m.PingQueue = []PingResponse{}
 	m.FindQueue = []FindResponse{}
 	m.FindOneQueue = []FindOneResponse{}
@@ -815,6 +857,7 @@ func (m *MockDatabase) Reset() {
 	m.CountQueue = []CountResponse{}
 	m.InsertOneQueue = []InsertResponse{}
 	m.InsertManyQueue = []InsertResponse{}
+	m.AggregateQueue = []FindResponse{}
 }
 
 // ExpectPing sets up an expectation for Ping
@@ -853,6 +896,14 @@ func (m *MockDatabase) ExpectFindOneAndUpdate(result any, err error) *MockDataba
 func (m *MockDatabase) ExpectCreateIndexes(names []string, err error) *MockDatabase {
 	m.CreateIndexesFunc = func(ctx context.Context, db string, collection string, indexes []mongo.IndexModel, opts ...any) ([]string, error) {
 		return names, err
+	}
+	return m
+}
+
+// ExpectAggregate sets up an aggregation response.
+func (m *MockDatabase) ExpectAggregate(result any, err error) *MockDatabase {
+	m.AggregateFunc = func(ctx context.Context, db string, collection string, pipeline any, opts ...any) FindResultInterface {
+		return &MockFindResult{results: result, err: err}
 	}
 	return m
 }
@@ -922,6 +973,12 @@ func (m *MockDatabase) QueueFindOneAndUpdate(result any, err error) *MockDatabas
 // QueueCreateIndexes adds an index creation response to the queue.
 func (m *MockDatabase) QueueCreateIndexes(names []string, err error) *MockDatabase {
 	m.CreateIndexesQueue = append(m.CreateIndexesQueue, CreateIndexesResponse{Names: names, Err: err})
+	return m
+}
+
+// QueueAggregate adds an aggregation response to the queue.
+func (m *MockDatabase) QueueAggregate(result any, err error) *MockDatabase {
+	m.AggregateQueue = append(m.AggregateQueue, FindResponse{Result: result, Err: err})
 	return m
 }
 
