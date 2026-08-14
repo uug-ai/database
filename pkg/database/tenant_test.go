@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"go.mongodb.org/mongo-driver/bson"
+	"go.mongodb.org/mongo-driver/bson/primitive"
 )
 
 func TestCanonicalFirstOwnership(t *testing.T) {
@@ -39,5 +40,50 @@ func TestMissingCanonicalOrganisation(t *testing.T) {
 	}}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("MissingCanonicalOrganisation mismatch:\n got: %#v\nwant: %#v", got, want)
+	}
+}
+
+func TestProjectScopeUnset(t *testing.T) {
+	if got := projectScope(primitive.NilObjectID); got != nil {
+		t.Fatalf("projectScope with zero projectId should be nil, got: %#v", got)
+	}
+}
+
+func TestProjectScopeSelectedProject(t *testing.T) {
+	project := primitive.NewObjectID()
+	got := projectScope(project)
+	want := bson.M{"projectId": project}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("projectScope selected-project mismatch:\n got: %#v\nwant: %#v", got, want)
+	}
+}
+
+func TestScopeWithProjectUnsetMatchesOwnership(t *testing.T) {
+	got := ScopeWithProject("org-1", "user_id", "legacy-1", primitive.NilObjectID)
+	want := CanonicalFirstOwnership("org-1", "user_id", "legacy-1")
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("ScopeWithProject with zero projectId must equal CanonicalFirstOwnership:\n got: %#v\nwant: %#v", got, want)
+	}
+}
+
+func TestScopeWithProjectSelectedProject(t *testing.T) {
+	project := primitive.NewObjectID()
+	got := ScopeWithProject("org-1", "user_id", "legacy-1", project)
+	want := bson.M{"$and": []bson.M{
+		CanonicalFirstOwnership("org-1", "user_id", "legacy-1"),
+		{"projectId": project},
+	}}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("ScopeWithProject selected-project mismatch:\n got: %#v\nwant: %#v", got, want)
+	}
+}
+
+func TestTenantFieldScopeWithProject(t *testing.T) {
+	tenant := TenantField{Legacy: "owner_id"}
+	project := primitive.NewObjectID()
+	got := tenant.ScopeWithProject("org-9", "legacy-9", project)
+	want := ScopeWithProject("org-9", "owner_id", "legacy-9", project)
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("TenantField.ScopeWithProject mismatch:\n got: %#v\nwant: %#v", got, want)
 	}
 }
