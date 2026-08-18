@@ -232,9 +232,22 @@ func (r *DeviceResolver) resolveOrganisation(ctx context.Context, device models.
 	// run on this instance. A primary organisation deterministically reuses the
 	// master user's id, so deriving it here produces exactly the value the
 	// migration will later persist. Failing instead would drop every message on
-	// an un-migrated deployment. An owner with no user record is orphaned and
-	// must not be invented.
-	if !userExists {
+	// an un-migrated deployment.
+	//
+	// The derivation is only meaningful if the owner has a user record, because
+	// bootstrap mints one organisation per master user. An owner with no user
+	// record is orphaned: deriving an id for it would stamp media with a tenant
+	// the migration never creates, which no reader would ever select.
+	ownerExists := userExists
+	if ownerId != legacyId {
+		// Ownership followed a master link, so userExists only proves the
+		// sub-user is real. The derived id is the master's, and a dangling
+		// user_id must not be turned into an organisation.
+		if _, ownerExists, err = r.findUserOwnership(ctx, ownerId); err != nil {
+			return primitive.NilObjectID, err
+		}
+	}
+	if !ownerExists {
 		return primitive.NilObjectID, fmt.Errorf("source device %q legacy owner %s has no user or organisation record", device.Key, ownerId.Hex())
 	}
 	return ownerId, nil

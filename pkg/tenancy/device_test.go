@@ -163,12 +163,52 @@ func TestResolveDeviceDerivesSubUserMasterOrganisationBeforeBootstrap(t *testing
 	mock.QueueFindOne(nil, mongo.ErrNoDocuments)
 	mock.QueueFindOne(map[string]any{"_id": userId, "user_id": masterId.Hex()}, nil)
 	mock.QueueFindOne(nil, mongo.ErrNoDocuments)
+	mock.QueueFindOne(map[string]any{"_id": masterId}, nil)
 	mock.QueueFind([]persistedOrganisationOwnership{}, nil)
 
 	assertOwnership(t, resolver, models.Device{
 		Key:    "device-1",
 		UserId: userId.Hex(),
 	}, masterId, masterId)
+}
+
+func TestResolveDeviceRejectsDanglingMasterBeforeBootstrap(t *testing.T) {
+	// The sub-user is real but its user_id points at a master that no longer
+	// exists. Bootstrap mints one organisation per master user, so deriving an
+	// id here would stamp media with a tenant the migration never creates —
+	// invisible to every reader rather than merely wrong.
+	resolver, mock := testResolver(Collections{})
+	userId := primitive.NewObjectID()
+	masterId := primitive.NewObjectID()
+	mock.QueueFindOne(nil, mongo.ErrNoDocuments)
+	mock.QueueFindOne(map[string]any{"_id": userId, "user_id": masterId.Hex()}, nil)
+	mock.QueueFindOne(nil, mongo.ErrNoDocuments)
+	mock.QueueFindOne(nil, mongo.ErrNoDocuments)
+	mock.QueueFind([]persistedOrganisationOwnership{}, nil)
+
+	assertFailsClosed(t, resolver, models.Device{
+		Key:    "device-1",
+		UserId: userId.Hex(),
+	}, "a legacy sub-user whose master account no longer exists")
+}
+
+func TestResolveDeviceDoesNotRecheckDirectOwnerBeforeBootstrap(t *testing.T) {
+	// The owner is the queried user itself, so its existence is already proven.
+	// A second lookup would be a wasted round trip on every un-migrated message.
+	resolver, mock := testResolver(Collections{})
+	masterId := primitive.NewObjectID()
+	mock.QueueFindOne(nil, mongo.ErrNoDocuments)
+	mock.QueueFindOne(map[string]any{"_id": masterId}, nil)
+	mock.QueueFind([]persistedOrganisationOwnership{}, nil)
+
+	assertOwnership(t, resolver, models.Device{
+		Key:    "device-1",
+		UserId: masterId.Hex(),
+	}, masterId, masterId)
+
+	if len(mock.FindOneCalls) != 2 {
+		t.Fatalf("FindOne calls = %d, want 2", len(mock.FindOneCalls))
+	}
 }
 
 func TestResolveDeviceFailsOnAmbiguousLegacyOwner(t *testing.T) {
