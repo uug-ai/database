@@ -18,7 +18,7 @@
 //     collection exists to check against. Ambiguity fails closed.
 //   - The project is assigned from a definition, never looked up. During the
 //     hidden single-project rollout no authoritative project record exists, so
-//     any query would let two services disagree. See models/pkg/projectscope.
+//     any query would let two services disagree. See models.ResolveProjectId.
 package tenancy
 
 import (
@@ -28,7 +28,6 @@ import (
 
 	"github.com/uug-ai/database/pkg/database"
 	"github.com/uug-ai/models/pkg/models"
-	"github.com/uug-ai/models/pkg/projectscope"
 	"github.com/uug-ai/models/pkg/properties"
 	"go.mongodb.org/mongo-driver/bson/primitive"
 	"go.mongodb.org/mongo-driver/mongo"
@@ -166,7 +165,7 @@ func (r *DeviceResolver) ResolveDevice(ctx context.Context, device models.Device
 	}
 	return Ownership{
 		OrganisationId: organisationId,
-		ProjectId:      projectscope.ResolveProjectId(organisationId, device.ProjectId),
+		ProjectId:      models.ResolveProjectId(organisationId, device.ProjectId),
 	}, nil
 }
 
