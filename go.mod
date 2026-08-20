@@ -4,7 +4,7 @@ go 1.25.8
 
 require (
 	github.com/go-playground/validator/v10 v10.30.2
-	github.com/uug-ai/models v1.7.16
+	github.com/uug-ai/models v1.7.20
 	go.mongodb.org/mongo-driver v1.17.9
 	go.opentelemetry.io/contrib/instrumentation/go.mongodb.org/mongo-driver/mongo/otelmongo v0.68.0
 )
