@@ -1,6 +1,7 @@
 package database
 
 import (
+	"github.com/uug-ai/models/pkg/models"
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/bson/primitive"
 )
@@ -104,6 +105,25 @@ func projectScope(projectId primitive.ObjectID) bson.M {
 		return nil
 	}
 	return bson.M{CanonicalProjectField: projectId}
+}
+
+// DefaultCompatibleProjectScope returns the project predicate used while
+// historical project-scoped resources are being backfilled. The deterministic
+// default project may match an exact, missing, or null projectId; non-default
+// projects always require exact equality. A zero project leaves the query
+// organisation-wide, matching projectScope.
+func DefaultCompatibleProjectScope(organisationId, projectId primitive.ObjectID) bson.M {
+	if projectId.IsZero() {
+		return nil
+	}
+	if projectId != models.DefaultProjectId(organisationId) {
+		return bson.M{CanonicalProjectField: projectId}
+	}
+	return bson.M{"$or": []bson.M{
+		{CanonicalProjectField: projectId},
+		{CanonicalProjectField: bson.M{"$exists": false}},
+		{CanonicalProjectField: nil},
+	}}
 }
 
 // ScopeWithProject returns a tenant-isolation filter that ANDs canonical-first

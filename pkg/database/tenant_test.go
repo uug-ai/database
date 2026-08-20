@@ -58,6 +58,29 @@ func TestProjectScopeSelectedProject(t *testing.T) {
 	}
 }
 
+func TestDefaultCompatibleProjectScope(t *testing.T) {
+	organisationId := primitive.NewObjectID()
+	defaultProjectId := organisationId
+	wantDefault := bson.M{"$or": []bson.M{
+		{CanonicalProjectField: defaultProjectId},
+		{CanonicalProjectField: bson.M{"$exists": false}},
+		{CanonicalProjectField: nil},
+	}}
+	if got := DefaultCompatibleProjectScope(organisationId, defaultProjectId); !reflect.DeepEqual(got, wantDefault) {
+		t.Fatalf("default-compatible scope = %#v, want %#v", got, wantDefault)
+	}
+
+	nonDefaultProjectId := primitive.NewObjectID()
+	wantNonDefault := bson.M{CanonicalProjectField: nonDefaultProjectId}
+	if got := DefaultCompatibleProjectScope(organisationId, nonDefaultProjectId); !reflect.DeepEqual(got, wantNonDefault) {
+		t.Fatalf("non-default scope = %#v, want %#v", got, wantNonDefault)
+	}
+
+	if got := DefaultCompatibleProjectScope(organisationId, primitive.NilObjectID); got != nil {
+		t.Fatalf("zero project scope = %#v, want nil", got)
+	}
+}
+
 func TestScopeWithProjectUnsetMatchesOwnership(t *testing.T) {
 	got := ScopeWithProject("org-1", "user_id", "legacy-1", primitive.NilObjectID)
 	want := CanonicalFirstOwnership("org-1", "user_id", "legacy-1")
