@@ -74,66 +74,54 @@ func (t TenantField) Scope(organisationId, legacyValue string) bson.M {
 // narrowing axis applied on top of organisation ownership, never a replacement
 // for it: a project always lives inside exactly one organisation and project
 // scope is ANDed with the canonical-first organisation filter. An absent value
-// means the resource is organisation-wide (it belongs to no specific project),
-// so it is only returned by organisation-scoped reads, not by a project-scoped
-// read.
+// means the resource belongs to no specific project and is therefore owned by
+// its organisation's default project, which is why the project predicate
+// tolerates a missing field for that project and only for it.
+//
+// The field name is declared here for index and backfill tooling. The predicate
+// itself is not: it lives in models.ProjectScopeFilter, because the writer that
+// stamps the field (ingest, via models.ResolveProjectId) must not depend on this
+// module. Keep this constant in step with the key that helper matches on.
 const CanonicalProjectField = "projectId"
 
-// projectScope returns the project-narrowing predicate for a selected project.
-// It is an internal building block for ScopeWithProject, not a tenant filter on
-// its own: it carries no organisation ownership, so it must never be used as a
-// standalone read filter.
+// DefaultCompatibleProjectScope returns the project-narrowing predicate for a
+// selected project: exact equality for a real project, and for the
+// organisation's default project an $or that also matches documents written
+// before the project axis existed. A zero project returns nil, meaning "do not
+// narrow", which leaves the query organisation-wide.
 //
-// It has two modes:
-//
-//   - a zero projectId — no narrowing. Returns nil so callers scope by
-//     organisation only. This keeps every reader byte-for-byte identical to the
-//     pre-projects behaviour until a project is actually selected, and is also
-//     the organisation-wide view (which includes resources that belong to no
-//     project).
-//   - a set projectId — a single equality on the resource's owning projectId.
-//     Organisation-wide resources (no owning project) are not matched, matching
-//     the model contract where a resource is organisation-wide until it is
-//     assigned a project.
-//
-// Projects are net-new, so projectId is always a real ObjectID with no legacy
-// string-hex history to fall back to; a single typed equality is sufficient.
-// Cross-project sharing is intentionally not modelled here — if a
-// sharedWithProjectIds axis is ever added, this predicate grows an $or.
-func projectScope(projectId primitive.ObjectID) bson.M {
-	if projectId.IsZero() {
-		return nil
-	}
-	return bson.M{CanonicalProjectField: projectId}
-}
-
-// DefaultCompatibleProjectScope returns the project predicate used while
-// historical project-scoped resources are being backfilled. The deterministic
-// default project may match an exact, missing, or null projectId; non-default
-// projects always require exact equality. A zero project leaves the query
-// organisation-wide, matching projectScope.
+// Deprecated: this is now a thin adapter over models.ProjectScopeFilter, which
+// is the single definition of the rule and is what the ingest writer's stamping
+// is paired with. Prefer calling that helper directly, or ScopeWithProject when
+// the organisation clause is wanted too. This wrapper exists only because it
+// takes the organisation as an ObjectID rather than a hex string.
 func DefaultCompatibleProjectScope(organisationId, projectId primitive.ObjectID) bson.M {
-	if projectId.IsZero() {
-		return nil
-	}
-	if projectId != models.DefaultProjectId(organisationId) {
-		return bson.M{CanonicalProjectField: projectId}
-	}
-	return bson.M{"$or": []bson.M{
-		{CanonicalProjectField: projectId},
-		{CanonicalProjectField: bson.M{"$exists": false}},
-		{CanonicalProjectField: nil},
-	}}
+	return models.ProjectScopeFilter(organisationId.Hex(), projectId)
 }
 
 // ScopeWithProject returns a tenant-isolation filter that ANDs canonical-first
 // organisation ownership with an optional project narrowing.
 //
-// When projectId is zero the result is exactly CanonicalFirstOwnership, so
-// call sites can adopt this helper without changing behaviour and only start
+// When projectId is zero the result is exactly CanonicalFirstOwnership, so call
+// sites can adopt this helper without changing behaviour and only start
 // narrowing once a project is selected. When projectId is set, the project
-// predicate (see projectScope) is ANDed on top of organisation ownership so a
-// stale legacy owner can never widen a document across projects.
+// predicate is ANDed on top of organisation ownership so a stale legacy owner
+// can never widen a document across projects.
+//
+// The project half is models.ProjectScopeFilter, not a local equality. That
+// distinction is the whole point of routing through it: a caller who resolves
+// the hidden default project and then scopes strictly on it excludes every
+// document written before the field existed — an organisation's entire
+// pre-rollout history — and does so silently, because a predicate that stops
+// matching returns zero documents rather than an error. The tolerance is
+// conditional on the default project for the mirror-image reason: relaxing it
+// unconditionally reads identically today and becomes a cross-project leak the
+// day a second project exists.
+//
+// An organisationId that is not valid hex yields no project narrowing at all
+// (models.ProjectScopeFilter degrades to nil). The read stays bounded by the
+// ownership clause, so this fails organisation-wide rather than blanking a
+// tenant's screen over a resolution glitch.
 //
 // Note for callers that already inject a top-level "$and" into the returned map
 // (e.g. name lookups during the organisation migration): when a project is
@@ -141,7 +129,7 @@ func DefaultCompatibleProjectScope(organisationId, projectId primitive.ObjectID)
 // rather than overwriting the key.
 func ScopeWithProject(organisationId, legacyField, legacyValue string, projectId primitive.ObjectID) bson.M {
 	ownership := CanonicalFirstOwnership(organisationId, legacyField, legacyValue)
-	project := projectScope(projectId)
+	project := models.ProjectScopeFilter(organisationId, projectId)
 	if project == nil {
 		return ownership
 	}
@@ -150,7 +138,7 @@ func ScopeWithProject(organisationId, legacyField, legacyValue string, projectId
 
 // ScopeWithProject returns the canonical-first ownership filter for this
 // collection, optionally narrowed to a project. It mirrors Scope but threads the
-// selected project id through projectScope.
+// selected project id through the shared project predicate.
 func (t TenantField) ScopeWithProject(organisationId, legacyValue string, projectId primitive.ObjectID) bson.M {
 	return ScopeWithProject(organisationId, t.Legacy, legacyValue, projectId)
 }

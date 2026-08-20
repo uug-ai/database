@@ -4,6 +4,7 @@ import (
 	"reflect"
 	"testing"
 
+	"github.com/uug-ai/models/pkg/models"
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/bson/primitive"
 )
@@ -43,21 +44,6 @@ func TestMissingCanonicalOrganisation(t *testing.T) {
 	}
 }
 
-func TestProjectScopeUnset(t *testing.T) {
-	if got := projectScope(primitive.NilObjectID); got != nil {
-		t.Fatalf("projectScope with zero projectId should be nil, got: %#v", got)
-	}
-}
-
-func TestProjectScopeSelectedProject(t *testing.T) {
-	project := primitive.NewObjectID()
-	got := projectScope(project)
-	want := bson.M{"projectId": project}
-	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("projectScope selected-project mismatch:\n got: %#v\nwant: %#v", got, want)
-	}
-}
-
 func TestDefaultCompatibleProjectScope(t *testing.T) {
 	organisationId := primitive.NewObjectID()
 	defaultProjectId := organisationId
@@ -81,6 +67,23 @@ func TestDefaultCompatibleProjectScope(t *testing.T) {
 	}
 }
 
+// The adapter must not develop semantics of its own: whatever the shared rule
+// says for a given organisation/project pair is what this returns.
+func TestDefaultCompatibleProjectScopeMatchesSharedPredicate(t *testing.T) {
+	organisationId := primitive.NewObjectID()
+	for name, projectId := range map[string]primitive.ObjectID{
+		"default":     organisationId,
+		"non-default": primitive.NewObjectID(),
+		"zero":        primitive.NilObjectID,
+	} {
+		got := DefaultCompatibleProjectScope(organisationId, projectId)
+		want := models.ProjectScopeFilter(organisationId.Hex(), projectId)
+		if !reflect.DeepEqual(got, want) {
+			t.Fatalf("%s project: adapter = %#v, shared predicate = %#v", name, got, want)
+		}
+	}
+}
+
 func TestScopeWithProjectUnsetMatchesOwnership(t *testing.T) {
 	got := ScopeWithProject("org-1", "user_id", "legacy-1", primitive.NilObjectID)
 	want := CanonicalFirstOwnership("org-1", "user_id", "legacy-1")
@@ -90,10 +93,11 @@ func TestScopeWithProjectUnsetMatchesOwnership(t *testing.T) {
 }
 
 func TestScopeWithProjectSelectedProject(t *testing.T) {
+	organisationId := primitive.NewObjectID().Hex()
 	project := primitive.NewObjectID()
-	got := ScopeWithProject("org-1", "user_id", "legacy-1", project)
+	got := ScopeWithProject(organisationId, "user_id", "legacy-1", project)
 	want := bson.M{"$and": []bson.M{
-		CanonicalFirstOwnership("org-1", "user_id", "legacy-1"),
+		CanonicalFirstOwnership(organisationId, "user_id", "legacy-1"),
 		{"projectId": project},
 	}}
 	if !reflect.DeepEqual(got, want) {
@@ -101,11 +105,49 @@ func TestScopeWithProjectSelectedProject(t *testing.T) {
 	}
 }
 
+// The regression this whole helper exists to prevent. Scoping strictly on the
+// organisation's default project excludes every document written before the
+// project field existed, and does it silently — the query returns zero
+// documents, not an error. The default project must therefore also match a
+// missing and a null projectId.
+func TestScopeWithProjectDefaultProjectToleratesUnstampedDocuments(t *testing.T) {
+	organisation := primitive.NewObjectID()
+	organisationId := organisation.Hex()
+	defaultProject := models.DefaultProjectId(organisation)
+
+	got := ScopeWithProject(organisationId, "user_id", "legacy-1", defaultProject)
+	want := bson.M{"$and": []bson.M{
+		CanonicalFirstOwnership(organisationId, "user_id", "legacy-1"),
+		{"$or": []bson.M{
+			{"projectId": defaultProject},
+			{"projectId": bson.M{"$exists": false}},
+			{"projectId": nil},
+		}},
+	}}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("ScopeWithProject default-project mismatch:\n got: %#v\nwant: %#v", got, want)
+	}
+}
+
+// An organisation id that is not an ObjectID cannot be checked against the
+// default project, so the project axis drops out entirely and the read stays
+// bounded by ownership alone. Degrading to organisation-wide is deliberate:
+// the alternative, an unmatchable predicate, blanks a tenant's screen over a
+// resolution glitch.
+func TestScopeWithProjectNonHexOrganisationDegradesToOwnership(t *testing.T) {
+	got := ScopeWithProject("legacy-org", "user_id", "legacy-1", primitive.NewObjectID())
+	want := CanonicalFirstOwnership("legacy-org", "user_id", "legacy-1")
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("non-hex organisation must not narrow by project:\n got: %#v\nwant: %#v", got, want)
+	}
+}
+
 func TestTenantFieldScopeWithProject(t *testing.T) {
 	tenant := TenantField{Legacy: "owner_id"}
+	organisationId := primitive.NewObjectID().Hex()
 	project := primitive.NewObjectID()
-	got := tenant.ScopeWithProject("org-9", "legacy-9", project)
-	want := ScopeWithProject("org-9", "owner_id", "legacy-9", project)
+	got := tenant.ScopeWithProject(organisationId, "legacy-9", project)
+	want := ScopeWithProject(organisationId, "owner_id", "legacy-9", project)
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("TenantField.ScopeWithProject mismatch:\n got: %#v\nwant: %#v", got, want)
 	}
