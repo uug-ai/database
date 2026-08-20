@@ -13,13 +13,30 @@ func TestCanonicalFirstOwnership(t *testing.T) {
 	got := CanonicalFirstOwnership("org-123", "master_user_id", "legacy-abc")
 	want := bson.M{"$or": []bson.M{
 		{"organisationId": "org-123"},
-		{"$and": []bson.M{
-			MissingCanonicalOrganisation(),
-			{"master_user_id": "legacy-abc"},
-		}},
+		{
+			"master_user_id": "legacy-abc",
+			"organisationId": bson.M{"$in": bson.A{nil, ""}},
+		},
 	}}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("CanonicalFirstOwnership mismatch:\n got: %#v\nwant: %#v", got, want)
+	}
+}
+
+// A collection that declares the canonical field as its own legacy owner field
+// has two tests for one key. Merging them would write one over the other and
+// widen the tenant scope, so both must survive as an explicit conjunction.
+func TestCanonicalFirstOwnershipKeepsCollidingLegacyFieldSeparate(t *testing.T) {
+	got := CanonicalFirstOwnership("org-123", CanonicalOrganisationField, "legacy-abc")
+	want := bson.M{"$or": []bson.M{
+		{"organisationId": "org-123"},
+		{"$and": []bson.M{
+			MissingCanonicalOrganisation(),
+			{CanonicalOrganisationField: "legacy-abc"},
+		}},
+	}}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("colliding legacy field mismatch:\n got: %#v\nwant: %#v", got, want)
 	}
 }
 
@@ -34,24 +51,36 @@ func TestTenantFieldScope(t *testing.T) {
 
 func TestMissingCanonicalOrganisation(t *testing.T) {
 	got := MissingCanonicalOrganisation()
-	want := bson.M{"$or": []bson.M{
-		{"organisationId": bson.M{"$exists": false}},
-		{"organisationId": ""},
-		{"organisationId": nil},
-	}}
+	want := bson.M{"organisationId": bson.M{"$in": bson.A{nil, ""}}}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("MissingCanonicalOrganisation mismatch:\n got: %#v\nwant: %#v", got, want)
+	}
+}
+
+// The migration predicate must stay a single key holding point-matchable
+// values. An $exists arm selects the same documents but cannot be resolved from
+// an index, which costs every reader that merges the ownership arms an index
+// scan and hands it a collection scan instead.
+func TestMissingCanonicalOrganisationIsIndexBounded(t *testing.T) {
+	got := MissingCanonicalOrganisation()
+	if len(got) != 1 {
+		t.Fatalf("predicate must be a single key, got %#v", got)
+	}
+	candidates, ok := got[CanonicalOrganisationField].(bson.M)["$in"].(bson.A)
+	if !ok {
+		t.Fatalf("predicate must narrow %s with $in, got %#v", CanonicalOrganisationField, got)
+	}
+	for _, candidate := range candidates {
+		if _, isOperator := candidate.(bson.M); isOperator {
+			t.Fatalf("$in must hold plain values, got operator %#v", candidate)
+		}
 	}
 }
 
 func TestDefaultCompatibleProjectScope(t *testing.T) {
 	organisationId := primitive.NewObjectID()
 	defaultProjectId := organisationId
-	wantDefault := bson.M{"$or": []bson.M{
-		{CanonicalProjectField: defaultProjectId},
-		{CanonicalProjectField: bson.M{"$exists": false}},
-		{CanonicalProjectField: nil},
-	}}
+	wantDefault := bson.M{CanonicalProjectField: bson.M{"$in": bson.A{defaultProjectId, nil}}}
 	if got := DefaultCompatibleProjectScope(organisationId, defaultProjectId); !reflect.DeepEqual(got, wantDefault) {
 		t.Fatalf("default-compatible scope = %#v, want %#v", got, wantDefault)
 	}
@@ -96,12 +125,77 @@ func TestScopeWithProjectSelectedProject(t *testing.T) {
 	organisationId := primitive.NewObjectID().Hex()
 	project := primitive.NewObjectID()
 	got := ScopeWithProject(organisationId, "user_id", "legacy-1", project)
-	want := bson.M{"$and": []bson.M{
-		CanonicalFirstOwnership(organisationId, "user_id", "legacy-1"),
-		{"projectId": project},
+	want := bson.M{"$or": []bson.M{
+		{
+			"organisationId": organisationId,
+			"projectId":      project,
+		},
+		{
+			"user_id":        "legacy-1",
+			"organisationId": bson.M{"$in": bson.A{nil, ""}},
+			"projectId":      project,
+		},
 	}}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("ScopeWithProject selected-project mismatch:\n got: %#v\nwant: %#v", got, want)
+	}
+}
+
+// The tenant-safety property behind the distributed shape: no ownership arm may
+// escape project narrowing. An unnarrowed legacy arm would let a stale owner id
+// widen the read across every project in the organisation — the exact leak the
+// project clause exists to prevent.
+func TestScopeWithProjectNarrowsEveryOwnershipArm(t *testing.T) {
+	organisation := primitive.NewObjectID()
+
+	for name, project := range map[string]primitive.ObjectID{
+		"default project": models.DefaultProjectId(organisation),
+		"real project":    primitive.NewObjectID(),
+	} {
+		got := ScopeWithProject(organisation.Hex(), "user_id", "legacy-1", project)
+
+		arms, ok := got["$or"].([]bson.M)
+		if !ok {
+			t.Fatalf("%s: expected a top-level $or, got %#v", name, got)
+		}
+		if len(arms) != 2 {
+			t.Fatalf("%s: expected both ownership arms, got %#v", name, arms)
+		}
+		for _, arm := range arms {
+			if _, narrowed := arm[CanonicalProjectField]; !narrowed {
+				t.Fatalf("%s: ownership arm escapes project narrowing: %#v", name, arm)
+			}
+		}
+	}
+}
+
+// The distributed form must select exactly what the conjunctive form selected.
+// It is the distributive law over an "$or", not a policy change, so every arm
+// has to carry the unmodified project clause and nothing else may move.
+func TestScopeWithProjectDistributesTheConjunctiveForm(t *testing.T) {
+	organisation := primitive.NewObjectID()
+	organisationId := organisation.Hex()
+	project := models.DefaultProjectId(organisation)
+
+	ownership := CanonicalFirstOwnership(organisationId, "user_id", "legacy-1")
+	projectClause := models.ProjectScopeFilter(organisationId, project)
+
+	got := ScopeWithProject(organisationId, "user_id", "legacy-1", project)
+
+	want := bson.M{"$or": []bson.M{}}
+	for _, arm := range ownership["$or"].([]bson.M) {
+		combined := bson.M{}
+		for field, test := range arm {
+			combined[field] = test
+		}
+		for field, test := range projectClause {
+			combined[field] = test
+		}
+		want["$or"] = append(want["$or"].([]bson.M), combined)
+	}
+
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("ScopeWithProject is not the distributed conjunction:\n got: %#v\nwant: %#v", got, want)
 	}
 }
 
@@ -109,23 +203,34 @@ func TestScopeWithProjectSelectedProject(t *testing.T) {
 // organisation's default project excludes every document written before the
 // project field existed, and does it silently — the query returns zero
 // documents, not an error. The default project must therefore also match a
-// missing and a null projectId.
+// missing and a null projectId, on every ownership arm.
 func TestScopeWithProjectDefaultProjectToleratesUnstampedDocuments(t *testing.T) {
 	organisation := primitive.NewObjectID()
 	organisationId := organisation.Hex()
 	defaultProject := models.DefaultProjectId(organisation)
 
 	got := ScopeWithProject(organisationId, "user_id", "legacy-1", defaultProject)
-	want := bson.M{"$and": []bson.M{
-		CanonicalFirstOwnership(organisationId, "user_id", "legacy-1"),
-		{"$or": []bson.M{
-			{"projectId": defaultProject},
-			{"projectId": bson.M{"$exists": false}},
-			{"projectId": nil},
-		}},
-	}}
-	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("ScopeWithProject default-project mismatch:\n got: %#v\nwant: %#v", got, want)
+
+	arms, ok := got["$or"].([]bson.M)
+	if !ok {
+		t.Fatalf("expected a top-level $or, got %#v", got)
+	}
+	for _, arm := range arms {
+		candidates, ok := arm[CanonicalProjectField].(bson.M)["$in"].(bson.A)
+		if !ok {
+			t.Fatalf("arm does not tolerate an unstamped projectId: %#v", arm)
+		}
+
+		var tolerated bool
+		for _, candidate := range candidates {
+			// null matches both an explicit null and a missing field.
+			if candidate == nil {
+				tolerated = true
+			}
+		}
+		if !tolerated {
+			t.Fatalf("arm excludes documents written before the project axis existed: %#v", arm)
+		}
 	}
 }
 

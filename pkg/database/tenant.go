@@ -19,12 +19,16 @@ const CanonicalOrganisationField = "organisationId"
 // is the predicate that distinguishes pre-migration (legacy-owned) documents
 // from migrated ones, and is exported so index and backfill tooling can reuse
 // the exact same shape.
+//
+// It is a single-key $in rather than an $or over an $exists, an empty-string and
+// a null arm. The two select the same documents — a null test already matches an
+// absent field — but only the $in is answerable from an index, because a missing
+// field and an explicit null are stored as the same index entry and no planner
+// can tell them apart without fetching the document. Keeping this shape point-
+// matchable is what allows the ownership branches to be scanned from an index
+// rather than resolved by a collection scan.
 func MissingCanonicalOrganisation() bson.M {
-	return bson.M{"$or": []bson.M{
-		{CanonicalOrganisationField: bson.M{"$exists": false}},
-		{CanonicalOrganisationField: ""},
-		{CanonicalOrganisationField: nil},
-	}}
+	return bson.M{CanonicalOrganisationField: bson.M{"$in": bson.A{nil, ""}}}
 }
 
 // CanonicalFirstOwnership returns a tenant-isolation filter that matches:
@@ -42,14 +46,30 @@ func MissingCanonicalOrganisation() bson.M {
 // Once every document has been backfilled with organisationId, the legacy
 // branch can be dropped and this collapses to a single equality on
 // organisationId.
+//
+// Each arm is a flat conjunction rather than a nested "$and". That is not
+// cosmetic: an index can only serve an "$or" when every arm applies all of its
+// bounds at index level, so keeping the arms flat and point-matchable is what
+// lets a reader merge them from an index instead of scanning the collection.
 func CanonicalFirstOwnership(organisationId, legacyField, legacyValue string) bson.M {
+	legacy := bson.M{legacyField: legacyValue}
+	for field, test := range MissingCanonicalOrganisation() {
+		if _, collides := legacy[field]; collides {
+			// The collection declares the canonical field as its own legacy
+			// owner field. Merging would write one test over the other and
+			// widen the tenant scope, so keep both as an explicit conjunction.
+			legacy = bson.M{"$and": []bson.M{
+				MissingCanonicalOrganisation(),
+				{legacyField: legacyValue},
+			}}
+			break
+		}
+		legacy[field] = test
+	}
+
 	return bson.M{"$or": []bson.M{
 		{CanonicalOrganisationField: organisationId},
-
-		{"$and": []bson.M{
-			MissingCanonicalOrganisation(),
-			{legacyField: legacyValue},
-		}},
+		legacy,
 	}}
 }
 
@@ -99,14 +119,14 @@ func DefaultCompatibleProjectScope(organisationId, projectId primitive.ObjectID)
 	return models.ProjectScopeFilter(organisationId.Hex(), projectId)
 }
 
-// ScopeWithProject returns a tenant-isolation filter that ANDs canonical-first
-// organisation ownership with an optional project narrowing.
+// ScopeWithProject returns a tenant-isolation filter that combines
+// canonical-first organisation ownership with an optional project narrowing.
 //
 // When projectId is zero the result is exactly CanonicalFirstOwnership, so call
 // sites can adopt this helper without changing behaviour and only start
 // narrowing once a project is selected. When projectId is set, the project
-// predicate is ANDed on top of organisation ownership so a stale legacy owner
-// can never widen a document across projects.
+// predicate is applied to every ownership arm, so a stale legacy owner can never
+// widen a document across projects.
 //
 // The project half is models.ProjectScopeFilter, not a local equality. That
 // distinction is the whole point of routing through it: a caller who resolves
@@ -118,22 +138,60 @@ func DefaultCompatibleProjectScope(organisationId, projectId primitive.ObjectID)
 // unconditionally reads identically today and becomes a cross-project leak the
 // day a second project exists.
 //
+// The project clause is pushed into each ownership arm instead of being ANDed
+// on top of them, and that shape is load-bearing. An index can serve an "$or"
+// only when every arm applies all of its bounds at index level; a clause left
+// outside the "$or" is a residual the planner must resolve per candidate
+// document, which collapses an indexed read into a full scan of the tenant's
+// collection followed by a blocking sort. Distributing it keeps every arm
+// index-resolvable, so a paged, sorted read merges a few index entries rather
+// than examining the whole tenant. The two shapes select identical documents —
+// this is the distributive law, not a policy change.
+//
 // An organisationId that is not valid hex yields no project narrowing at all
 // (models.ProjectScopeFilter degrades to nil). The read stays bounded by the
 // ownership clause, so this fails organisation-wide rather than blanking a
 // tenant's screen over a resolution glitch.
 //
-// Note for callers that already inject a top-level "$and" into the returned map
-// (e.g. name lookups during the organisation migration): when a project is
-// selected this helper returns a top-level "$and", so append to that slice
-// rather than overwriting the key.
+// Note for callers that add their own clauses to the returned map: this helper
+// now always returns a top-level "$or", with or without a project. Adding a
+// sibling key (match["deviceId"] = ...) is safe and ANDs as expected, but
+// assigning to "$or" would overwrite the tenant boundary. Wrap the result in an
+// "$and" instead of writing into it. Be aware that any clause added outside the
+// "$or" is the residual described above: it is correct, but it gives up the
+// index merge, so prefer narrowing on a field the arms already constrain.
 func ScopeWithProject(organisationId, legacyField, legacyValue string, projectId primitive.ObjectID) bson.M {
 	ownership := CanonicalFirstOwnership(organisationId, legacyField, legacyValue)
+
 	project := models.ProjectScopeFilter(organisationId, projectId)
 	if project == nil {
 		return ownership
 	}
-	return bson.M{"$and": []bson.M{ownership, project}}
+
+	arms, ok := ownership["$or"].([]bson.M)
+	if !ok {
+		return bson.M{"$and": []bson.M{ownership, project}}
+	}
+
+	narrowed := make([]bson.M, 0, len(arms))
+	for _, arm := range arms {
+		combined := bson.M{}
+		for field, test := range arm {
+			combined[field] = test
+		}
+		for field, test := range project {
+			if _, collides := combined[field]; collides {
+				// A field constrained by both halves cannot be merged into one
+				// map without one test silently replacing the other. Fall back
+				// to the conjunctive shape: slower, but never wrong.
+				return bson.M{"$and": []bson.M{ownership, project}}
+			}
+			combined[field] = test
+		}
+		narrowed = append(narrowed, combined)
+	}
+
+	return bson.M{"$or": narrowed}
 }
 
 // ScopeWithProject returns the canonical-first ownership filter for this
