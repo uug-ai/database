@@ -93,10 +93,13 @@ func NewDeviceResolver(db *database.Database, collections Collections) *DeviceRe
 	return &DeviceResolver{db: db, collections: collections.withDefaults()}
 }
 
+// persistedOrganisationOwnership reads only the canonical owner. Unlike the
+// resource collections, the organisation document never had a snake_case owner
+// field: models.Organisation has always declared bson:"ownerId", and it is the
+// only spelling the ownerId_1 index covers.
 type persistedOrganisationOwnership struct {
-	Id            primitive.ObjectID `bson:"_id"`
-	OwnerId       primitive.ObjectID `bson:"ownerId"`
-	LegacyOwnerId string             `bson:"owner_id"`
+	Id      primitive.ObjectID `bson:"_id"`
+	OwnerId primitive.ObjectID `bson:"ownerId"`
 }
 
 type persistedUserOwnership struct {
@@ -118,7 +121,7 @@ func DeviceProjection() *database.Projection {
 	)
 }
 
-// LoadDevice reads the ownership fields of a source device by its key.
+// LoadDevice reads the ownership fields of exactly one source device by its key.
 func (r *DeviceResolver) LoadDevice(ctx context.Context, deviceKey string) (models.Device, error) {
 	if r == nil || r.db == nil || r.db.Client == nil {
 		return models.Device{}, fmt.Errorf("source device %q lookup requires a database", deviceKey)
@@ -127,17 +130,25 @@ func (r *DeviceResolver) LoadDevice(ctx context.Context, deviceKey string) (mode
 	databaseCtx, cancel := context.WithTimeout(ctx, r.db.Client.GetTimeout())
 	defer cancel()
 
-	var device models.Device
-	err := r.db.Client.FindOne(
+	var devices []models.Device
+	err := r.db.Client.Find(
 		databaseCtx,
 		r.collections.Database,
 		r.collections.Devices,
 		map[string]string{properties.DeviceKey: deviceKey},
 		DeviceProjection(),
-	).Into(&device)
+		options.Find().SetLimit(2),
+	).All(&devices)
 	if err != nil {
 		return models.Device{}, fmt.Errorf("find source device %q: %w", deviceKey, err)
 	}
+	if len(devices) == 0 {
+		return models.Device{}, fmt.Errorf("find source device %q: %w", deviceKey, mongo.ErrNoDocuments)
+	}
+	if len(devices) > 1 {
+		return models.Device{}, fmt.Errorf("source device key %q resolves to multiple persisted devices", deviceKey)
+	}
+	device := devices[0]
 	if device.Id.IsZero() {
 		return models.Device{}, fmt.Errorf("source device %q has no persisted identity", deviceKey)
 	}
@@ -294,10 +305,12 @@ func (r *DeviceResolver) findOrganisationsByOwner(ctx context.Context, ownerId p
 	databaseCtx, cancel := context.WithTimeout(ctx, r.db.Client.GetTimeout())
 	defer cancel()
 
-	filter := map[string]any{"$or": []any{
-		map[string]any{properties.OrganisationOwnerId: ownerId},
-		map[string]any{"owner_id": ownerId.Hex()},
-	}}
+	// A plain equality rather than an ownership $or: organisations only ever
+	// stored the canonical owner, so a second arm would add no reachable
+	// document while costing the ownerId_1 index. An $or is only index-served
+	// when every arm is index-bounded, and no owner_id index exists to bound
+	// one — the whole lookup would degrade to a collection scan.
+	filter := map[string]any{properties.OrganisationOwnerId: ownerId}
 	var organisations []persistedOrganisationOwnership
 	if err := r.db.Client.Find(databaseCtx, r.collections.Database, r.collections.Organisations, filter, options.Find().SetLimit(2)).All(&organisations); err != nil {
 		return nil, fmt.Errorf("find organisations owned by %s: %w", ownerId.Hex(), err)
@@ -305,12 +318,6 @@ func (r *DeviceResolver) findOrganisationsByOwner(ctx context.Context, ownerId p
 	for _, organisation := range organisations {
 		if organisation.Id.IsZero() {
 			return nil, fmt.Errorf("organisation owned by %s has no persisted identity", ownerId.Hex())
-		}
-		if !organisation.OwnerId.IsZero() && organisation.OwnerId != ownerId {
-			return nil, fmt.Errorf("organisation %s has conflicting canonical owner %s and legacy owner %s", organisation.Id.Hex(), organisation.OwnerId.Hex(), ownerId.Hex())
-		}
-		if organisation.LegacyOwnerId != "" && organisation.LegacyOwnerId != ownerId.Hex() {
-			return nil, fmt.Errorf("organisation %s has conflicting legacy owner %s and resolved owner %s", organisation.Id.Hex(), organisation.LegacyOwnerId, ownerId.Hex())
 		}
 	}
 	return organisations, nil

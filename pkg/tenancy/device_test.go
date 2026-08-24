@@ -2,12 +2,16 @@ package tenancy
 
 import (
 	"context"
+	"errors"
+	"reflect"
 	"testing"
 
 	"github.com/uug-ai/database/pkg/database"
 	"github.com/uug-ai/models/pkg/models"
+	"github.com/uug-ai/models/pkg/properties"
 	"go.mongodb.org/mongo-driver/bson/primitive"
 	"go.mongodb.org/mongo-driver/mongo"
+	"go.mongodb.org/mongo-driver/mongo/options"
 )
 
 func testResolver(collections Collections) (*DeviceResolver, *database.MockDatabase) {
@@ -245,18 +249,33 @@ func TestResolveDeviceRejectsInvalidMasterRelationship(t *testing.T) {
 	assertFailsClosed(t, resolver, models.Device{Key: "device-1", UserId: userId.Hex()}, "invalid master ownership")
 }
 
-func TestResolveDeviceRejectsConflictingOwnerFields(t *testing.T) {
+// The organisation lookup must stay a plain canonical equality. An ownership
+// $or here would be unreachable — organisations never stored a snake_case owner
+// — and would cost the ownerId_1 index, because an $or is only index-served
+// when every arm is index-bounded and no owner_id index exists.
+func TestResolveDeviceLooksUpOrganisationOwnerByCanonicalFieldOnly(t *testing.T) {
 	resolver, mock := testResolver(Collections{})
 	ownerId := primitive.NewObjectID()
+	organisationId := primitive.NewObjectID()
 	mock.QueueFindOne(nil, mongo.ErrNoDocuments)
 	mock.QueueFindOne(map[string]any{"_id": ownerId}, nil)
-	mock.QueueFind([]persistedOrganisationOwnership{{
-		Id:            primitive.NewObjectID(),
-		OwnerId:       primitive.NewObjectID(),
-		LegacyOwnerId: ownerId.Hex(),
-	}}, nil)
+	mock.QueueFind([]persistedOrganisationOwnership{{Id: organisationId, OwnerId: ownerId}}, nil)
 
-	assertFailsClosed(t, resolver, models.Device{Key: "device-1", UserId: ownerId.Hex()}, "conflicting canonical and legacy organisation owners")
+	ownership, err := resolver.ResolveDevice(context.Background(), models.Device{Key: "device-1", UserId: ownerId.Hex()})
+	if err != nil {
+		t.Fatalf("resolve device: %v", err)
+	}
+	if ownership.OrganisationId != organisationId {
+		t.Fatalf("organisation = %s, want %s", ownership.OrganisationId.Hex(), organisationId.Hex())
+	}
+
+	if len(mock.FindCalls) != 1 {
+		t.Fatalf("Find calls = %d, want 1", len(mock.FindCalls))
+	}
+	want := map[string]any{properties.OrganisationOwnerId: ownerId}
+	if !reflect.DeepEqual(mock.FindCalls[0].Filter, want) {
+		t.Fatalf("owner filter = %#v, want %#v", mock.FindCalls[0].Filter, want)
+	}
 }
 
 func TestResolveDeviceRejectsMissingOrInvalidOwnership(t *testing.T) {
@@ -284,11 +303,11 @@ func TestLoadDeviceReadsConfiguredCollection(t *testing.T) {
 	resolver, mock := testResolver(Collections{Database: "Custom", Devices: "sources"})
 	deviceId := primitive.NewObjectID()
 	organisationId := primitive.NewObjectID()
-	mock.QueueFindOne(map[string]any{
-		"_id":            deviceId,
-		"key":            "device-1",
-		"organisationId": organisationId.Hex(),
-	}, nil)
+	mock.QueueFind([]models.Device{{
+		Id:             deviceId,
+		Key:            "device-1",
+		OrganisationId: organisationId.Hex(),
+	}}, nil)
 
 	device, err := resolver.LoadDevice(context.Background(), "device-1")
 	if err != nil {
@@ -297,20 +316,50 @@ func TestLoadDeviceReadsConfiguredCollection(t *testing.T) {
 	if device.Id != deviceId {
 		t.Fatalf("device id = %s, want %s", device.Id.Hex(), deviceId.Hex())
 	}
-	if len(mock.FindOneCalls) != 1 {
-		t.Fatalf("FindOne calls = %d, want 1", len(mock.FindOneCalls))
+	if len(mock.FindCalls) != 1 {
+		t.Fatalf("Find calls = %d, want 1", len(mock.FindCalls))
 	}
-	if mock.FindOneCalls[0].Db != "Custom" || mock.FindOneCalls[0].Collection != "sources" {
-		t.Fatalf("read %s/%s, want Custom/sources", mock.FindOneCalls[0].Db, mock.FindOneCalls[0].Collection)
+	if mock.FindCalls[0].Db != "Custom" || mock.FindCalls[0].Collection != "sources" {
+		t.Fatalf("read %s/%s, want Custom/sources", mock.FindCalls[0].Db, mock.FindCalls[0].Collection)
+	}
+	var findOptions *options.FindOptions
+	for _, option := range mock.FindCalls[0].Opts {
+		if typed, ok := option.(*options.FindOptions); ok {
+			findOptions = typed
+		}
+	}
+	if findOptions == nil || findOptions.Limit == nil || *findOptions.Limit != 2 {
+		t.Fatalf("find options = %#v, want limit 2", mock.FindCalls[0].Opts)
 	}
 }
 
 func TestLoadDeviceRejectsDocumentWithoutIdentity(t *testing.T) {
 	resolver, mock := testResolver(Collections{})
-	mock.QueueFindOne(map[string]any{"key": "device-1"}, nil)
+	mock.QueueFind([]models.Device{{Key: "device-1"}}, nil)
 
 	if _, err := resolver.LoadDevice(context.Background(), "device-1"); err == nil {
 		t.Fatal("a device document with no persisted identity must fail closed")
+	}
+}
+
+func TestLoadDeviceRejectsMissingDevice(t *testing.T) {
+	resolver, mock := testResolver(Collections{})
+	mock.QueueFind([]models.Device{}, nil)
+
+	if _, err := resolver.LoadDevice(context.Background(), "device-1"); !errors.Is(err, mongo.ErrNoDocuments) {
+		t.Fatalf("LoadDevice() error = %v, want mongo.ErrNoDocuments", err)
+	}
+}
+
+func TestLoadDeviceRejectsAmbiguousKey(t *testing.T) {
+	resolver, mock := testResolver(Collections{})
+	mock.QueueFind([]models.Device{
+		{Id: primitive.NewObjectID(), Key: "device-1"},
+		{Id: primitive.NewObjectID(), Key: "device-1"},
+	}, nil)
+
+	if _, err := resolver.LoadDevice(context.Background(), "device-1"); err == nil {
+		t.Fatal("a device key resolving to multiple documents must fail closed")
 	}
 }
 
@@ -318,11 +367,11 @@ func TestResolveDeviceByKeyReturnsDeviceAndOwnership(t *testing.T) {
 	resolver, mock := testResolver(Collections{})
 	deviceId := primitive.NewObjectID()
 	organisationId := primitive.NewObjectID()
-	mock.QueueFindOne(map[string]any{
-		"_id":            deviceId,
-		"key":            "device-1",
-		"organisationId": organisationId.Hex(),
-	}, nil)
+	mock.QueueFind([]models.Device{{
+		Id:             deviceId,
+		Key:            "device-1",
+		OrganisationId: organisationId.Hex(),
+	}}, nil)
 
 	device, ownership, err := resolver.ResolveDeviceByKey(context.Background(), "device-1")
 	if err != nil {
