@@ -118,7 +118,7 @@ func DeviceProjection() *database.Projection {
 	)
 }
 
-// LoadDevice reads the ownership fields of a source device by its key.
+// LoadDevice reads the ownership fields of exactly one source device by its key.
 func (r *DeviceResolver) LoadDevice(ctx context.Context, deviceKey string) (models.Device, error) {
 	if r == nil || r.db == nil || r.db.Client == nil {
 		return models.Device{}, fmt.Errorf("source device %q lookup requires a database", deviceKey)
@@ -127,17 +127,25 @@ func (r *DeviceResolver) LoadDevice(ctx context.Context, deviceKey string) (mode
 	databaseCtx, cancel := context.WithTimeout(ctx, r.db.Client.GetTimeout())
 	defer cancel()
 
-	var device models.Device
-	err := r.db.Client.FindOne(
+	var devices []models.Device
+	err := r.db.Client.Find(
 		databaseCtx,
 		r.collections.Database,
 		r.collections.Devices,
 		map[string]string{properties.DeviceKey: deviceKey},
 		DeviceProjection(),
-	).Into(&device)
+		options.Find().SetLimit(2),
+	).All(&devices)
 	if err != nil {
 		return models.Device{}, fmt.Errorf("find source device %q: %w", deviceKey, err)
 	}
+	if len(devices) == 0 {
+		return models.Device{}, fmt.Errorf("find source device %q: %w", deviceKey, mongo.ErrNoDocuments)
+	}
+	if len(devices) > 1 {
+		return models.Device{}, fmt.Errorf("source device key %q resolves to multiple persisted devices", deviceKey)
+	}
+	device := devices[0]
 	if device.Id.IsZero() {
 		return models.Device{}, fmt.Errorf("source device %q has no persisted identity", deviceKey)
 	}

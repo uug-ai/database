@@ -2,12 +2,14 @@ package tenancy
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"github.com/uug-ai/database/pkg/database"
 	"github.com/uug-ai/models/pkg/models"
 	"go.mongodb.org/mongo-driver/bson/primitive"
 	"go.mongodb.org/mongo-driver/mongo"
+	"go.mongodb.org/mongo-driver/mongo/options"
 )
 
 func testResolver(collections Collections) (*DeviceResolver, *database.MockDatabase) {
@@ -284,11 +286,11 @@ func TestLoadDeviceReadsConfiguredCollection(t *testing.T) {
 	resolver, mock := testResolver(Collections{Database: "Custom", Devices: "sources"})
 	deviceId := primitive.NewObjectID()
 	organisationId := primitive.NewObjectID()
-	mock.QueueFindOne(map[string]any{
-		"_id":            deviceId,
-		"key":            "device-1",
-		"organisationId": organisationId.Hex(),
-	}, nil)
+	mock.QueueFind([]models.Device{{
+		Id:             deviceId,
+		Key:            "device-1",
+		OrganisationId: organisationId.Hex(),
+	}}, nil)
 
 	device, err := resolver.LoadDevice(context.Background(), "device-1")
 	if err != nil {
@@ -297,20 +299,50 @@ func TestLoadDeviceReadsConfiguredCollection(t *testing.T) {
 	if device.Id != deviceId {
 		t.Fatalf("device id = %s, want %s", device.Id.Hex(), deviceId.Hex())
 	}
-	if len(mock.FindOneCalls) != 1 {
-		t.Fatalf("FindOne calls = %d, want 1", len(mock.FindOneCalls))
+	if len(mock.FindCalls) != 1 {
+		t.Fatalf("Find calls = %d, want 1", len(mock.FindCalls))
 	}
-	if mock.FindOneCalls[0].Db != "Custom" || mock.FindOneCalls[0].Collection != "sources" {
-		t.Fatalf("read %s/%s, want Custom/sources", mock.FindOneCalls[0].Db, mock.FindOneCalls[0].Collection)
+	if mock.FindCalls[0].Db != "Custom" || mock.FindCalls[0].Collection != "sources" {
+		t.Fatalf("read %s/%s, want Custom/sources", mock.FindCalls[0].Db, mock.FindCalls[0].Collection)
+	}
+	var findOptions *options.FindOptions
+	for _, option := range mock.FindCalls[0].Opts {
+		if typed, ok := option.(*options.FindOptions); ok {
+			findOptions = typed
+		}
+	}
+	if findOptions == nil || findOptions.Limit == nil || *findOptions.Limit != 2 {
+		t.Fatalf("find options = %#v, want limit 2", mock.FindCalls[0].Opts)
 	}
 }
 
 func TestLoadDeviceRejectsDocumentWithoutIdentity(t *testing.T) {
 	resolver, mock := testResolver(Collections{})
-	mock.QueueFindOne(map[string]any{"key": "device-1"}, nil)
+	mock.QueueFind([]models.Device{{Key: "device-1"}}, nil)
 
 	if _, err := resolver.LoadDevice(context.Background(), "device-1"); err == nil {
 		t.Fatal("a device document with no persisted identity must fail closed")
+	}
+}
+
+func TestLoadDeviceRejectsMissingDevice(t *testing.T) {
+	resolver, mock := testResolver(Collections{})
+	mock.QueueFind([]models.Device{}, nil)
+
+	if _, err := resolver.LoadDevice(context.Background(), "device-1"); !errors.Is(err, mongo.ErrNoDocuments) {
+		t.Fatalf("LoadDevice() error = %v, want mongo.ErrNoDocuments", err)
+	}
+}
+
+func TestLoadDeviceRejectsAmbiguousKey(t *testing.T) {
+	resolver, mock := testResolver(Collections{})
+	mock.QueueFind([]models.Device{
+		{Id: primitive.NewObjectID(), Key: "device-1"},
+		{Id: primitive.NewObjectID(), Key: "device-1"},
+	}, nil)
+
+	if _, err := resolver.LoadDevice(context.Background(), "device-1"); err == nil {
+		t.Fatal("a device key resolving to multiple documents must fail closed")
 	}
 }
 
@@ -318,11 +350,11 @@ func TestResolveDeviceByKeyReturnsDeviceAndOwnership(t *testing.T) {
 	resolver, mock := testResolver(Collections{})
 	deviceId := primitive.NewObjectID()
 	organisationId := primitive.NewObjectID()
-	mock.QueueFindOne(map[string]any{
-		"_id":            deviceId,
-		"key":            "device-1",
-		"organisationId": organisationId.Hex(),
-	}, nil)
+	mock.QueueFind([]models.Device{{
+		Id:             deviceId,
+		Key:            "device-1",
+		OrganisationId: organisationId.Hex(),
+	}}, nil)
 
 	device, ownership, err := resolver.ResolveDeviceByKey(context.Background(), "device-1")
 	if err != nil {
