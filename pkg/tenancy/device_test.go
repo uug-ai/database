@@ -3,10 +3,12 @@ package tenancy
 import (
 	"context"
 	"errors"
+	"reflect"
 	"testing"
 
 	"github.com/uug-ai/database/pkg/database"
 	"github.com/uug-ai/models/pkg/models"
+	"github.com/uug-ai/models/pkg/properties"
 	"go.mongodb.org/mongo-driver/bson/primitive"
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
@@ -247,18 +249,33 @@ func TestResolveDeviceRejectsInvalidMasterRelationship(t *testing.T) {
 	assertFailsClosed(t, resolver, models.Device{Key: "device-1", UserId: userId.Hex()}, "invalid master ownership")
 }
 
-func TestResolveDeviceRejectsConflictingOwnerFields(t *testing.T) {
+// The organisation lookup must stay a plain canonical equality. An ownership
+// $or here would be unreachable — organisations never stored a snake_case owner
+// — and would cost the ownerId_1 index, because an $or is only index-served
+// when every arm is index-bounded and no owner_id index exists.
+func TestResolveDeviceLooksUpOrganisationOwnerByCanonicalFieldOnly(t *testing.T) {
 	resolver, mock := testResolver(Collections{})
 	ownerId := primitive.NewObjectID()
+	organisationId := primitive.NewObjectID()
 	mock.QueueFindOne(nil, mongo.ErrNoDocuments)
 	mock.QueueFindOne(map[string]any{"_id": ownerId}, nil)
-	mock.QueueFind([]persistedOrganisationOwnership{{
-		Id:            primitive.NewObjectID(),
-		OwnerId:       primitive.NewObjectID(),
-		LegacyOwnerId: ownerId.Hex(),
-	}}, nil)
+	mock.QueueFind([]persistedOrganisationOwnership{{Id: organisationId, OwnerId: ownerId}}, nil)
 
-	assertFailsClosed(t, resolver, models.Device{Key: "device-1", UserId: ownerId.Hex()}, "conflicting canonical and legacy organisation owners")
+	ownership, err := resolver.ResolveDevice(context.Background(), models.Device{Key: "device-1", UserId: ownerId.Hex()})
+	if err != nil {
+		t.Fatalf("resolve device: %v", err)
+	}
+	if ownership.OrganisationId != organisationId {
+		t.Fatalf("organisation = %s, want %s", ownership.OrganisationId.Hex(), organisationId.Hex())
+	}
+
+	if len(mock.FindCalls) != 1 {
+		t.Fatalf("Find calls = %d, want 1", len(mock.FindCalls))
+	}
+	want := map[string]any{properties.OrganisationOwnerId: ownerId}
+	if !reflect.DeepEqual(mock.FindCalls[0].Filter, want) {
+		t.Fatalf("owner filter = %#v, want %#v", mock.FindCalls[0].Filter, want)
+	}
 }
 
 func TestResolveDeviceRejectsMissingOrInvalidOwnership(t *testing.T) {

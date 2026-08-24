@@ -93,10 +93,13 @@ func NewDeviceResolver(db *database.Database, collections Collections) *DeviceRe
 	return &DeviceResolver{db: db, collections: collections.withDefaults()}
 }
 
+// persistedOrganisationOwnership reads only the canonical owner. Unlike the
+// resource collections, the organisation document never had a snake_case owner
+// field: models.Organisation has always declared bson:"ownerId", and it is the
+// only spelling the ownerId_1 index covers.
 type persistedOrganisationOwnership struct {
-	Id            primitive.ObjectID `bson:"_id"`
-	OwnerId       primitive.ObjectID `bson:"ownerId"`
-	LegacyOwnerId string             `bson:"owner_id"`
+	Id      primitive.ObjectID `bson:"_id"`
+	OwnerId primitive.ObjectID `bson:"ownerId"`
 }
 
 type persistedUserOwnership struct {
@@ -302,10 +305,12 @@ func (r *DeviceResolver) findOrganisationsByOwner(ctx context.Context, ownerId p
 	databaseCtx, cancel := context.WithTimeout(ctx, r.db.Client.GetTimeout())
 	defer cancel()
 
-	filter := map[string]any{"$or": []any{
-		map[string]any{properties.OrganisationOwnerId: ownerId},
-		map[string]any{"owner_id": ownerId.Hex()},
-	}}
+	// A plain equality rather than an ownership $or: organisations only ever
+	// stored the canonical owner, so a second arm would add no reachable
+	// document while costing the ownerId_1 index. An $or is only index-served
+	// when every arm is index-bounded, and no owner_id index exists to bound
+	// one — the whole lookup would degrade to a collection scan.
+	filter := map[string]any{properties.OrganisationOwnerId: ownerId}
 	var organisations []persistedOrganisationOwnership
 	if err := r.db.Client.Find(databaseCtx, r.collections.Database, r.collections.Organisations, filter, options.Find().SetLimit(2)).All(&organisations); err != nil {
 		return nil, fmt.Errorf("find organisations owned by %s: %w", ownerId.Hex(), err)
@@ -313,12 +318,6 @@ func (r *DeviceResolver) findOrganisationsByOwner(ctx context.Context, ownerId p
 	for _, organisation := range organisations {
 		if organisation.Id.IsZero() {
 			return nil, fmt.Errorf("organisation owned by %s has no persisted identity", ownerId.Hex())
-		}
-		if !organisation.OwnerId.IsZero() && organisation.OwnerId != ownerId {
-			return nil, fmt.Errorf("organisation %s has conflicting canonical owner %s and legacy owner %s", organisation.Id.Hex(), organisation.OwnerId.Hex(), ownerId.Hex())
-		}
-		if organisation.LegacyOwnerId != "" && organisation.LegacyOwnerId != ownerId.Hex() {
-			return nil, fmt.Errorf("organisation %s has conflicting legacy owner %s and resolved owner %s", organisation.Id.Hex(), organisation.LegacyOwnerId, ownerId.Hex())
 		}
 	}
 	return organisations, nil
