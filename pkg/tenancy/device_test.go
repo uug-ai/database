@@ -128,20 +128,21 @@ func TestResolveDeviceResolvesLegacySubUserThroughMaster(t *testing.T) {
 	}, masterId, masterId)
 }
 
-func TestResolveDeviceResolvesLegacyOwnerToSingleSecondaryOrganisation(t *testing.T) {
+func TestResolveDeviceKeepsLegacyOwnerInDefaultOrganisation(t *testing.T) {
 	resolver, mock := testResolver(Collections{})
 	ownerId := primitive.NewObjectID()
-	organisationId := primitive.NewObjectID()
 	mock.QueueFindOne(nil, mongo.ErrNoDocuments)
 	mock.QueueFindOne(map[string]any{"_id": ownerId}, nil)
-	mock.QueueFind([]persistedOrganisationOwnership{{Id: organisationId, OwnerId: ownerId}}, nil)
 
-	// A secondary organisation has an independent id, so the project default
-	// follows the organisation rather than the owning user.
+	// An owner-only legacy device belongs to the deterministic default. It must
+	// never be inferred into one of the owner's secondary organisations.
 	assertOwnership(t, resolver, models.Device{
 		Key:    "device-1",
 		UserId: ownerId.Hex(),
-	}, organisationId, organisationId)
+	}, ownerId, ownerId)
+	if len(mock.FindCalls) != 0 {
+		t.Fatalf("owner compatibility queried secondary organisations: %#v", mock.FindCalls)
+	}
 }
 
 func TestResolveDeviceDerivesPrimaryOrganisationBeforeBootstrap(t *testing.T) {
@@ -153,7 +154,6 @@ func TestResolveDeviceDerivesPrimaryOrganisationBeforeBootstrap(t *testing.T) {
 	masterId := primitive.NewObjectID()
 	mock.QueueFindOne(nil, mongo.ErrNoDocuments)
 	mock.QueueFindOne(map[string]any{"_id": masterId}, nil)
-	mock.QueueFind([]persistedOrganisationOwnership{}, nil)
 
 	assertOwnership(t, resolver, models.Device{
 		Key:    "device-1",
@@ -169,7 +169,6 @@ func TestResolveDeviceDerivesSubUserMasterOrganisationBeforeBootstrap(t *testing
 	mock.QueueFindOne(map[string]any{"_id": userId, "user_id": masterId.Hex()}, nil)
 	mock.QueueFindOne(nil, mongo.ErrNoDocuments)
 	mock.QueueFindOne(map[string]any{"_id": masterId}, nil)
-	mock.QueueFind([]persistedOrganisationOwnership{}, nil)
 
 	assertOwnership(t, resolver, models.Device{
 		Key:    "device-1",
@@ -189,7 +188,6 @@ func TestResolveDeviceRejectsDanglingMasterBeforeBootstrap(t *testing.T) {
 	mock.QueueFindOne(map[string]any{"_id": userId, "user_id": masterId.Hex()}, nil)
 	mock.QueueFindOne(nil, mongo.ErrNoDocuments)
 	mock.QueueFindOne(nil, mongo.ErrNoDocuments)
-	mock.QueueFind([]persistedOrganisationOwnership{}, nil)
 
 	assertFailsClosed(t, resolver, models.Device{
 		Key:    "device-1",
@@ -204,7 +202,6 @@ func TestResolveDeviceDoesNotRecheckDirectOwnerBeforeBootstrap(t *testing.T) {
 	masterId := primitive.NewObjectID()
 	mock.QueueFindOne(nil, mongo.ErrNoDocuments)
 	mock.QueueFindOne(map[string]any{"_id": masterId}, nil)
-	mock.QueueFind([]persistedOrganisationOwnership{}, nil)
 
 	assertOwnership(t, resolver, models.Device{
 		Key:    "device-1",
@@ -216,24 +213,10 @@ func TestResolveDeviceDoesNotRecheckDirectOwnerBeforeBootstrap(t *testing.T) {
 	}
 }
 
-func TestResolveDeviceFailsOnAmbiguousLegacyOwner(t *testing.T) {
-	resolver, mock := testResolver(Collections{})
-	ownerId := primitive.NewObjectID()
-	mock.QueueFindOne(nil, mongo.ErrNoDocuments)
-	mock.QueueFindOne(map[string]any{"_id": ownerId}, nil)
-	mock.QueueFind([]persistedOrganisationOwnership{
-		{Id: primitive.NewObjectID(), OwnerId: ownerId},
-		{Id: primitive.NewObjectID(), OwnerId: ownerId},
-	}, nil)
-
-	assertFailsClosed(t, resolver, models.Device{Key: "device-1", UserId: ownerId.Hex()}, "ambiguous legacy ownership")
-}
-
 func TestResolveDeviceRejectsOrphanedLegacyOwner(t *testing.T) {
 	resolver, mock := testResolver(Collections{})
 	mock.QueueFindOne(nil, mongo.ErrNoDocuments)
 	mock.QueueFindOne(nil, mongo.ErrNoDocuments)
-	mock.QueueFind([]persistedOrganisationOwnership{}, nil)
 
 	assertFailsClosed(t, resolver, models.Device{
 		Key:    "device-1",
@@ -248,35 +231,6 @@ func TestResolveDeviceRejectsInvalidMasterRelationship(t *testing.T) {
 	mock.QueueFindOne(map[string]any{"_id": userId, "user_id": "invalid"}, nil)
 
 	assertFailsClosed(t, resolver, models.Device{Key: "device-1", UserId: userId.Hex()}, "invalid master ownership")
-}
-
-// The organisation lookup must stay a plain canonical equality. An ownership
-// $or here would be unreachable — organisations never stored a snake_case owner
-// — and would cost the ownerId_1 index, because an $or is only index-served
-// when every arm is index-bounded and no owner_id index exists.
-func TestResolveDeviceLooksUpOrganisationOwnerByCanonicalFieldOnly(t *testing.T) {
-	resolver, mock := testResolver(Collections{})
-	ownerId := primitive.NewObjectID()
-	organisationId := primitive.NewObjectID()
-	mock.QueueFindOne(nil, mongo.ErrNoDocuments)
-	mock.QueueFindOne(map[string]any{"_id": ownerId}, nil)
-	mock.QueueFind([]persistedOrganisationOwnership{{Id: organisationId, OwnerId: ownerId}}, nil)
-
-	ownership, err := resolver.ResolveDevice(context.Background(), models.Device{Key: "device-1", UserId: ownerId.Hex()})
-	if err != nil {
-		t.Fatalf("resolve device: %v", err)
-	}
-	if ownership.OrganisationId != organisationId {
-		t.Fatalf("organisation = %s, want %s", ownership.OrganisationId.Hex(), organisationId.Hex())
-	}
-
-	if len(mock.FindCalls) != 1 {
-		t.Fatalf("Find calls = %d, want 1", len(mock.FindCalls))
-	}
-	want := map[string]any{properties.OrganisationOwnerId: ownerId}
-	if !reflect.DeepEqual(mock.FindCalls[0].Filter, want) {
-		t.Fatalf("owner filter = %#v, want %#v", mock.FindCalls[0].Filter, want)
-	}
 }
 
 func TestResolveDeviceRejectsMissingOrInvalidOwnership(t *testing.T) {

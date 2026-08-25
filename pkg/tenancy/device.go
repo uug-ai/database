@@ -108,13 +108,8 @@ func NewDeviceResolver(db *database.Database, collections Collections) *DeviceRe
 	return &DeviceResolver{db: db, collections: collections.withDefaults()}
 }
 
-// persistedOrganisationOwnership reads only the canonical owner. Unlike the
-// resource collections, the organisation document never had a snake_case owner
-// field: models.Organisation has always declared bson:"ownerId", and it is the
-// only spelling the ownerId_1 index covers.
 type persistedOrganisationOwnership struct {
-	Id      primitive.ObjectID `bson:"_id"`
-	OwnerId primitive.ObjectID `bson:"ownerId"`
+	Id primitive.ObjectID `bson:"_id"`
 }
 
 type persistedUserOwnership struct {
@@ -343,22 +338,9 @@ func (r *DeviceResolver) resolveOrganisation(ctx context.Context, device models.
 		}
 	}
 
-	organisations, err := r.findOrganisationsByOwner(ctx, ownerId)
-	if err != nil {
-		return primitive.NilObjectID, err
-	}
-	if len(organisations) == 1 {
-		return organisations[0].Id, nil
-	}
-	if len(organisations) > 1 {
-		return primitive.NilObjectID, fmt.Errorf("source device %q legacy owner resolves to %d organisations", device.Key, len(organisations))
-	}
-
-	// No organisation record exists at all, so organisations-bootstrap has not
-	// run on this instance. A primary organisation deterministically reuses the
-	// master user's id, so deriving it here produces exactly the value the
-	// migration will later persist. Failing instead would drop every message on
-	// an un-migrated deployment.
+	// A legacy owner id deterministically denotes that owner's default
+	// organisation; it never selects one of the owner's secondary organisations.
+	// This produces exactly the identity organisations-bootstrap materialises.
 	//
 	// The derivation is only meaningful if the owner has a user record, because
 	// bootstrap mints one organisation per master user. An owner with no user
@@ -415,26 +397,4 @@ func (r *DeviceResolver) findUserOwnership(ctx context.Context, id primitive.Obj
 		return persistedUserOwnership{}, false, fmt.Errorf("find legacy device user %s: %w", id.Hex(), err)
 	}
 	return user, true, nil
-}
-
-func (r *DeviceResolver) findOrganisationsByOwner(ctx context.Context, ownerId primitive.ObjectID) ([]persistedOrganisationOwnership, error) {
-	databaseCtx, cancel := context.WithTimeout(ctx, r.db.Client.GetTimeout())
-	defer cancel()
-
-	// A plain equality rather than an ownership $or: organisations only ever
-	// stored the canonical owner, so a second arm would add no reachable
-	// document while costing the ownerId_1 index. An $or is only index-served
-	// when every arm is index-bounded, and no owner_id index exists to bound
-	// one — the whole lookup would degrade to a collection scan.
-	filter := map[string]any{properties.OrganisationOwnerId: ownerId}
-	var organisations []persistedOrganisationOwnership
-	if err := r.db.Client.Find(databaseCtx, r.collections.Database, r.collections.Organisations, filter, options.Find().SetLimit(2)).All(&organisations); err != nil {
-		return nil, fmt.Errorf("find organisations owned by %s: %w", ownerId.Hex(), err)
-	}
-	for _, organisation := range organisations {
-		if organisation.Id.IsZero() {
-			return nil, fmt.Errorf("organisation owned by %s has no persisted identity", ownerId.Hex())
-		}
-	}
-	return organisations, nil
 }
