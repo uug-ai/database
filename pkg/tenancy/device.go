@@ -29,6 +29,7 @@ import (
 	"github.com/uug-ai/database/pkg/database"
 	"github.com/uug-ai/models/pkg/models"
 	"github.com/uug-ai/models/pkg/properties"
+	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/bson/primitive"
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
@@ -81,6 +82,20 @@ type Ownership struct {
 	ProjectId      primitive.ObjectID
 }
 
+// DeviceLookup is trusted server-side context for selecting one persisted
+// device. DeviceId is authoritative when present. Otherwise a project scope
+// requires its parent organisation, and organisation scope retains the legacy
+// owner fallback for unstamped devices. A key alone is never sufficient.
+type DeviceLookup struct {
+	DeviceId       primitive.ObjectID
+	DeviceKey      string
+	OrganisationId primitive.ObjectID
+	ProjectId      primitive.ObjectID
+	LegacyOwnerId  primitive.ObjectID
+}
+
+var ErrDeviceScopeRequired = errors.New("trusted device scope is required")
+
 // DeviceResolver resolves device ownership against one database.
 type DeviceResolver struct {
 	db          *database.Database
@@ -122,6 +137,9 @@ func DeviceProjection() *database.Projection {
 }
 
 // LoadDevice reads the ownership fields of exactly one source device by its key.
+//
+// Deprecated: key-only lookup cannot distinguish the same non-secret key in
+// different projects. New ingress paths must use LoadScopedDevice.
 func (r *DeviceResolver) LoadDevice(ctx context.Context, deviceKey string) (models.Device, error) {
 	if r == nil || r.db == nil || r.db.Client == nil {
 		return models.Device{}, fmt.Errorf("source device %q lookup requires a database", deviceKey)
@@ -153,6 +171,104 @@ func (r *DeviceResolver) LoadDevice(ctx context.Context, deviceKey string) (mode
 		return models.Device{}, fmt.Errorf("source device %q has no persisted identity", deviceKey)
 	}
 	return device, nil
+}
+
+// LoadScopedDevice selects exactly one device within trusted server-side
+// identity. It permits the same non-secret device key in other projects while
+// still rejecting duplicates inside the selected scope.
+func (r *DeviceResolver) LoadScopedDevice(ctx context.Context, lookup DeviceLookup) (models.Device, error) {
+	if r == nil || r.db == nil || r.db.Client == nil {
+		return models.Device{}, fmt.Errorf("source device %q lookup requires a database", lookup.DeviceKey)
+	}
+	if lookup.DeviceKey == "" {
+		return models.Device{}, fmt.Errorf("%w: device key is empty", ErrDeviceScopeRequired)
+	}
+
+	filter, err := scopedDeviceFilter(lookup)
+	if err != nil {
+		return models.Device{}, err
+	}
+
+	databaseCtx, cancel := context.WithTimeout(ctx, r.db.Client.GetTimeout())
+	defer cancel()
+
+	var devices []models.Device
+	err = r.db.Client.Find(
+		databaseCtx,
+		r.collections.Database,
+		r.collections.Devices,
+		filter,
+		DeviceProjection(),
+		options.Find().SetLimit(2),
+	).All(&devices)
+	if err != nil {
+		return models.Device{}, fmt.Errorf("find scoped source device %q: %w", lookup.DeviceKey, err)
+	}
+	if len(devices) == 0 {
+		return models.Device{}, fmt.Errorf("find scoped source device %q: %w", lookup.DeviceKey, mongo.ErrNoDocuments)
+	}
+	if len(devices) > 1 {
+		return models.Device{}, fmt.Errorf("source device key %q resolves to multiple persisted devices inside its trusted scope", lookup.DeviceKey)
+	}
+	if devices[0].Id.IsZero() {
+		return models.Device{}, fmt.Errorf("source device %q has no persisted identity", lookup.DeviceKey)
+	}
+	return devices[0], nil
+}
+
+func scopedDeviceFilter(lookup DeviceLookup) (bson.M, error) {
+	if !lookup.DeviceId.IsZero() {
+		return bson.M{
+			properties.DeviceId:  lookup.DeviceId,
+			properties.DeviceKey: lookup.DeviceKey,
+		}, nil
+	}
+
+	legacyOwnerId := lookup.LegacyOwnerId
+	if legacyOwnerId.IsZero() {
+		legacyOwnerId = lookup.OrganisationId
+	}
+
+	if !lookup.ProjectId.IsZero() {
+		if lookup.OrganisationId.IsZero() {
+			return nil, fmt.Errorf("%w: project scope has no parent organisation", ErrDeviceScopeRequired)
+		}
+		filter := database.ScopeWithProject(
+			lookup.OrganisationId.Hex(),
+			properties.DeviceUserId,
+			legacyOwnerId.Hex(),
+			lookup.ProjectId,
+		)
+		for _, arm := range filter["$or"].([]bson.M) {
+			arm[properties.DeviceKey] = lookup.DeviceKey
+		}
+		return filter, nil
+	}
+
+	if !lookup.OrganisationId.IsZero() {
+		filter := database.CanonicalFirstOwnership(
+			lookup.OrganisationId.Hex(),
+			properties.DeviceUserId,
+			legacyOwnerId.Hex(),
+		)
+		for _, arm := range filter["$or"].([]bson.M) {
+			arm[properties.DeviceKey] = lookup.DeviceKey
+		}
+		return filter, nil
+	}
+
+	if !lookup.LegacyOwnerId.IsZero() {
+		filter := bson.M{
+			properties.DeviceKey:    lookup.DeviceKey,
+			properties.DeviceUserId: lookup.LegacyOwnerId.Hex(),
+		}
+		for field, test := range database.MissingCanonicalOrganisation() {
+			filter[field] = test
+		}
+		return filter, nil
+	}
+
+	return nil, fmt.Errorf("%w for key %q", ErrDeviceScopeRequired, lookup.DeviceKey)
 }
 
 // ResolveDeviceByKey loads a device and resolves its ownership in one step.

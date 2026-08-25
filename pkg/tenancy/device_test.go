@@ -9,6 +9,7 @@ import (
 	"github.com/uug-ai/database/pkg/database"
 	"github.com/uug-ai/models/pkg/models"
 	"github.com/uug-ai/models/pkg/properties"
+	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/bson/primitive"
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
@@ -360,6 +361,149 @@ func TestLoadDeviceRejectsAmbiguousKey(t *testing.T) {
 
 	if _, err := resolver.LoadDevice(context.Background(), "device-1"); err == nil {
 		t.Fatal("a device key resolving to multiple documents must fail closed")
+	}
+}
+
+func TestLoadScopedDeviceAllowsSameKeyInDifferentProjects(t *testing.T) {
+	resolver, mock := testResolver(Collections{})
+	organisationId := primitive.NewObjectID()
+	projectId := primitive.NewObjectID()
+	deviceId := primitive.NewObjectID()
+	mock.QueueFind([]models.Device{{
+		Id:             deviceId,
+		Key:            "device-1",
+		OrganisationId: organisationId.Hex(),
+		ProjectId:      &projectId,
+	}}, nil)
+
+	device, err := resolver.LoadScopedDevice(context.Background(), DeviceLookup{
+		DeviceKey:      "device-1",
+		OrganisationId: organisationId,
+		ProjectId:      projectId,
+	})
+	if err != nil {
+		t.Fatalf("LoadScopedDevice() error = %v", err)
+	}
+	if device.Id != deviceId {
+		t.Fatalf("device id = %s, want %s", device.Id.Hex(), deviceId.Hex())
+	}
+
+	filter := mock.FindCalls[0].Filter.(bson.M)
+	for _, arm := range filter["$or"].([]bson.M) {
+		if arm[properties.DeviceKey] != "device-1" || arm[properties.DeviceProjectId] != projectId {
+			t.Fatalf("project-scoped arm = %#v", arm)
+		}
+	}
+}
+
+func TestLoadScopedDeviceRequiresTrustedScope(t *testing.T) {
+	resolver, _ := testResolver(Collections{})
+
+	_, err := resolver.LoadScopedDevice(context.Background(), DeviceLookup{DeviceKey: "device-1"})
+	if !errors.Is(err, ErrDeviceScopeRequired) {
+		t.Fatalf("LoadScopedDevice() error = %v, want ErrDeviceScopeRequired", err)
+	}
+}
+
+func TestLoadScopedDeviceScopesCanonicalAndLegacyOrganisationOwnership(t *testing.T) {
+	resolver, mock := testResolver(Collections{})
+	organisationId := primitive.NewObjectID()
+	legacyOwnerId := primitive.NewObjectID()
+	deviceId := primitive.NewObjectID()
+	mock.QueueFind([]models.Device{{Id: deviceId, Key: "device-1"}}, nil)
+
+	_, err := resolver.LoadScopedDevice(context.Background(), DeviceLookup{
+		DeviceKey:      "device-1",
+		OrganisationId: organisationId,
+		LegacyOwnerId:  legacyOwnerId,
+	})
+	if err != nil {
+		t.Fatalf("LoadScopedDevice() error = %v", err)
+	}
+
+	want := bson.M{"$or": []bson.M{
+		{properties.DeviceOrganisationId: organisationId.Hex(), properties.DeviceKey: "device-1"},
+		{
+			properties.DeviceOrganisationId: bson.M{"$in": bson.A{nil, ""}},
+			properties.DeviceUserId:         legacyOwnerId.Hex(),
+			properties.DeviceKey:            "device-1",
+		},
+	}}
+	if !reflect.DeepEqual(mock.FindCalls[0].Filter, want) {
+		t.Fatalf("filter = %#v, want %#v", mock.FindCalls[0].Filter, want)
+	}
+}
+
+func TestLoadScopedDeviceRejectsDuplicateInsideTrustedProject(t *testing.T) {
+	resolver, mock := testResolver(Collections{})
+	organisationId := primitive.NewObjectID()
+	projectId := primitive.NewObjectID()
+	mock.QueueFind([]models.Device{
+		{Id: primitive.NewObjectID(), Key: "device-1"},
+		{Id: primitive.NewObjectID(), Key: "device-1"},
+	}, nil)
+
+	_, err := resolver.LoadScopedDevice(context.Background(), DeviceLookup{
+		DeviceKey:      "device-1",
+		OrganisationId: organisationId,
+		ProjectId:      projectId,
+	})
+	if err == nil {
+		t.Fatal("duplicate devices inside one trusted project must fail closed")
+	}
+}
+
+func TestLoadScopedDeviceRejectsProjectWithoutOrganisation(t *testing.T) {
+	resolver, _ := testResolver(Collections{})
+
+	_, err := resolver.LoadScopedDevice(context.Background(), DeviceLookup{
+		DeviceKey: "device-1",
+		ProjectId: primitive.NewObjectID(),
+	})
+	if !errors.Is(err, ErrDeviceScopeRequired) {
+		t.Fatalf("LoadScopedDevice() error = %v, want ErrDeviceScopeRequired", err)
+	}
+}
+
+func TestLoadScopedDeviceUsesOwnerOnlyForCanonicalMissingDevices(t *testing.T) {
+	resolver, mock := testResolver(Collections{})
+	ownerId := primitive.NewObjectID()
+	mock.QueueFind([]models.Device{{Id: primitive.NewObjectID(), Key: "device-1"}}, nil)
+
+	_, err := resolver.LoadScopedDevice(context.Background(), DeviceLookup{
+		DeviceKey:     "device-1",
+		LegacyOwnerId: ownerId,
+	})
+	if err != nil {
+		t.Fatalf("LoadScopedDevice() error = %v", err)
+	}
+	want := bson.M{
+		properties.DeviceKey:            "device-1",
+		properties.DeviceUserId:         ownerId.Hex(),
+		properties.DeviceOrganisationId: bson.M{"$in": bson.A{nil, ""}},
+	}
+	if !reflect.DeepEqual(mock.FindCalls[0].Filter, want) {
+		t.Fatalf("filter = %#v, want %#v", mock.FindCalls[0].Filter, want)
+	}
+}
+
+func TestLoadScopedDeviceUsesIdBeforeOwnershipScope(t *testing.T) {
+	resolver, mock := testResolver(Collections{})
+	deviceId := primitive.NewObjectID()
+	mock.QueueFind([]models.Device{{Id: deviceId, Key: "device-1"}}, nil)
+
+	_, err := resolver.LoadScopedDevice(context.Background(), DeviceLookup{
+		DeviceId:       deviceId,
+		DeviceKey:      "device-1",
+		OrganisationId: primitive.NewObjectID(),
+		ProjectId:      primitive.NewObjectID(),
+	})
+	if err != nil {
+		t.Fatalf("LoadScopedDevice() error = %v", err)
+	}
+	want := bson.M{properties.DeviceId: deviceId, properties.DeviceKey: "device-1"}
+	if !reflect.DeepEqual(mock.FindCalls[0].Filter, want) {
+		t.Fatalf("filter = %#v, want %#v", mock.FindCalls[0].Filter, want)
 	}
 }
 
