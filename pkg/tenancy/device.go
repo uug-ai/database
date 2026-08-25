@@ -89,6 +89,7 @@ type Ownership struct {
 type DeviceLookup struct {
 	DeviceId       primitive.ObjectID
 	DeviceKey      string
+	CloudKey       string
 	OrganisationId primitive.ObjectID
 	ProjectId      primitive.ObjectID
 	LegacyOwnerId  primitive.ObjectID
@@ -213,10 +214,12 @@ func (r *DeviceResolver) LoadScopedDevice(ctx context.Context, lookup DeviceLook
 
 func scopedDeviceFilter(lookup DeviceLookup) (bson.M, error) {
 	if !lookup.DeviceId.IsZero() {
-		return bson.M{
+		filter := bson.M{
 			properties.DeviceId:  lookup.DeviceId,
 			properties.DeviceKey: lookup.DeviceKey,
-		}, nil
+		}
+		addCloudKeyFilter(filter, lookup.CloudKey)
+		return filter, nil
 	}
 
 	legacyOwnerId := lookup.LegacyOwnerId
@@ -236,6 +239,7 @@ func scopedDeviceFilter(lookup DeviceLookup) (bson.M, error) {
 		)
 		for _, arm := range filter["$or"].([]bson.M) {
 			arm[properties.DeviceKey] = lookup.DeviceKey
+			addCloudKeyFilter(arm, lookup.CloudKey)
 		}
 		return filter, nil
 	}
@@ -248,6 +252,7 @@ func scopedDeviceFilter(lookup DeviceLookup) (bson.M, error) {
 		)
 		for _, arm := range filter["$or"].([]bson.M) {
 			arm[properties.DeviceKey] = lookup.DeviceKey
+			addCloudKeyFilter(arm, lookup.CloudKey)
 		}
 		return filter, nil
 	}
@@ -260,10 +265,17 @@ func scopedDeviceFilter(lookup DeviceLookup) (bson.M, error) {
 		for field, test := range database.MissingCanonicalOrganisation() {
 			filter[field] = test
 		}
+		addCloudKeyFilter(filter, lookup.CloudKey)
 		return filter, nil
 	}
 
 	return nil, fmt.Errorf("%w for key %q", ErrDeviceScopeRequired, lookup.DeviceKey)
+}
+
+func addCloudKeyFilter(filter bson.M, cloudKey string) {
+	if cloudKey != "" {
+		filter["analytics.cloudpublickey"] = cloudKey
+	}
 }
 
 // ResolveDeviceByKey loads a device and resolves its ownership in one step.

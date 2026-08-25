@@ -332,6 +332,7 @@ func TestLoadScopedDeviceAllowsSameKeyInDifferentProjects(t *testing.T) {
 
 	device, err := resolver.LoadScopedDevice(context.Background(), DeviceLookup{
 		DeviceKey:      "device-1",
+		CloudKey:       "cloud-key-1",
 		OrganisationId: organisationId,
 		ProjectId:      projectId,
 	})
@@ -344,7 +345,7 @@ func TestLoadScopedDeviceAllowsSameKeyInDifferentProjects(t *testing.T) {
 
 	filter := mock.FindCalls[0].Filter.(bson.M)
 	for _, arm := range filter["$or"].([]bson.M) {
-		if arm[properties.DeviceKey] != "device-1" || arm[properties.DeviceProjectId] != projectId {
+		if arm[properties.DeviceKey] != "device-1" || arm[properties.DeviceProjectId] != projectId || arm["analytics.cloudpublickey"] != "cloud-key-1" {
 			t.Fatalf("project-scoped arm = %#v", arm)
 		}
 	}
