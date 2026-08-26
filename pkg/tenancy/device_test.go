@@ -360,6 +360,46 @@ func TestLoadScopedDeviceRequiresTrustedScope(t *testing.T) {
 	}
 }
 
+func TestLoadScopedDeviceUsesDeviceAndCloudKeyLocator(t *testing.T) {
+	resolver, mock := testResolver(Collections{})
+	deviceId := primitive.NewObjectID()
+	mock.QueueFind([]models.Device{{Id: deviceId, Key: "device-1"}}, nil)
+
+	device, err := resolver.LoadScopedDevice(context.Background(), DeviceLookup{
+		DeviceKey: "device-1",
+		CloudKey:  "cloud-key-1",
+	})
+	if err != nil {
+		t.Fatalf("LoadScopedDevice() error = %v", err)
+	}
+	if device.Id != deviceId {
+		t.Fatalf("device id = %s, want %s", device.Id.Hex(), deviceId.Hex())
+	}
+	want := bson.M{
+		properties.DeviceKey:       "device-1",
+		"analytics.cloudpublickey": "cloud-key-1",
+	}
+	if !reflect.DeepEqual(mock.FindCalls[0].Filter, want) {
+		t.Fatalf("filter = %#v, want %#v", mock.FindCalls[0].Filter, want)
+	}
+}
+
+func TestLoadScopedDeviceRejectsDuplicateDeviceAndCloudKeyLocator(t *testing.T) {
+	resolver, mock := testResolver(Collections{})
+	mock.QueueFind([]models.Device{
+		{Id: primitive.NewObjectID(), Key: "device-1"},
+		{Id: primitive.NewObjectID(), Key: "device-1"},
+	}, nil)
+
+	_, err := resolver.LoadScopedDevice(context.Background(), DeviceLookup{
+		DeviceKey: "device-1",
+		CloudKey:  "cloud-key-1",
+	})
+	if err == nil {
+		t.Fatal("duplicate device and cloud-key locator must fail closed")
+	}
+}
+
 func TestLoadScopedDeviceScopesCanonicalAndLegacyOrganisationOwnership(t *testing.T) {
 	resolver, mock := testResolver(Collections{})
 	organisationId := primitive.NewObjectID()

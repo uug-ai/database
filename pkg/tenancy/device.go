@@ -221,6 +221,12 @@ func scopedDeviceFilter(lookup DeviceLookup) (bson.M, error) {
 		addCloudKeyFilter(filter, lookup.CloudKey)
 		return filter, nil
 	}
+	if lookup.CloudKey != "" && lookup.OrganisationId.IsZero() && lookup.ProjectId.IsZero() && lookup.LegacyOwnerId.IsZero() {
+		return bson.M{
+			properties.DeviceKey:       lookup.DeviceKey,
+			"analytics.cloudpublickey": lookup.CloudKey,
+		}, nil
+	}
 
 	legacyOwnerId := lookup.LegacyOwnerId
 	if legacyOwnerId.IsZero() {
