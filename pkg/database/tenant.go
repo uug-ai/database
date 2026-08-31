@@ -1,10 +1,41 @@
 package database
 
 import (
+	"fmt"
+	"strings"
+
 	"github.com/uug-ai/models/pkg/models"
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/bson/primitive"
 )
+
+// TenancyMode selects the persisted ownership contract used by readers during
+// the organisation/project migration.
+type TenancyMode string
+
+const (
+	TenancyModeLegacy        TenancyMode = "legacy"
+	TenancyModeCompatibility TenancyMode = "compatibility"
+	TenancyModeCanonical     TenancyMode = "canonical"
+)
+
+// ParseTenancyMode parses deployment configuration. An empty value preserves
+// migration-safe compatibility reads; unknown values are rejected so a typo
+// cannot silently select a different ownership contract.
+func ParseTenancyMode(value string) (TenancyMode, error) {
+	mode := TenancyMode(strings.ToLower(strings.TrimSpace(value)))
+	if mode == "" {
+		return TenancyModeCompatibility, nil
+	}
+	if !mode.IsValid() {
+		return "", fmt.Errorf("invalid tenancy mode %q", value)
+	}
+	return mode, nil
+}
+
+func (m TenancyMode) IsValid() bool {
+	return m == TenancyModeLegacy || m == TenancyModeCompatibility || m == TenancyModeCanonical
+}
 
 // CanonicalOrganisationField is the canonical, string-hex tenant ownership key
 // written to every organisation-owned document during the organisationId
@@ -52,6 +83,25 @@ func MissingCanonicalOrganisation() bson.M {
 // bounds at index level, so keeping the arms flat and point-matchable is what
 // lets a reader merge them from an index instead of scanning the collection.
 func CanonicalFirstOwnership(organisationId, legacyField, legacyValue string) bson.M {
+	return OwnershipScopeForMode(TenancyModeCompatibility, organisationId, legacyField, legacyValue)
+}
+
+// OwnershipScopeForMode returns the organisation ownership predicate for the
+// selected migration contract. Invalid modes degrade to compatibility so a
+// directly constructed value cannot accidentally disable migration fallbacks;
+// deployment configuration should still be validated with
+// ParseTenancyMode at startup.
+func OwnershipScopeForMode(mode TenancyMode, organisationId, legacyField, legacyValue string) bson.M {
+	if !mode.IsValid() {
+		mode = TenancyModeCompatibility
+	}
+	switch mode {
+	case TenancyModeLegacy:
+		return bson.M{legacyField: legacyValue}
+	case TenancyModeCanonical:
+		return bson.M{CanonicalOrganisationField: organisationId}
+	}
+
 	legacy := bson.M{legacyField: legacyValue}
 	for field, test := range MissingCanonicalOrganisation() {
 		if _, collides := legacy[field]; collides {
@@ -87,6 +137,12 @@ type TenantField struct {
 // already-resolved canonical organisationId and legacy owner value.
 func (t TenantField) Scope(organisationId, legacyValue string) bson.M {
 	return CanonicalFirstOwnership(organisationId, t.Legacy, legacyValue)
+}
+
+// ScopeForMode returns this collection's organisation ownership predicate for
+// the selected migration contract.
+func (t TenantField) ScopeForMode(mode TenancyMode, organisationId, legacyValue string) bson.M {
+	return OwnershipScopeForMode(mode, organisationId, t.Legacy, legacyValue)
 }
 
 // CanonicalProjectField is the optional owning-project key on an
@@ -161,32 +217,44 @@ func DefaultCompatibleProjectScope(organisationId, projectId primitive.ObjectID)
 // "$or" is the residual described above: it is correct, but it gives up the
 // index merge, so prefer narrowing on a field the arms already constrain.
 func ScopeWithProject(organisationId, legacyField, legacyValue string, projectId primitive.ObjectID) bson.M {
-	ownership := CanonicalFirstOwnership(organisationId, legacyField, legacyValue)
+	return ScopeWithProjectForMode(TenancyModeCompatibility, organisationId, legacyField, legacyValue, projectId)
+}
 
-	project := models.ProjectScopeFilter(organisationId, projectId)
+// ScopeWithProjectForMode combines the organisation and project predicates for
+// the selected migration contract. Canonical mode collapses to flat exact
+// equalities, while compatibility mode retains the guarded, index-mergeable
+// ownership branches and default-project tolerance.
+func ScopeWithProjectForMode(mode TenancyMode, organisationId, legacyField, legacyValue string, projectId primitive.ObjectID) bson.M {
+	if !mode.IsValid() {
+		mode = TenancyModeCompatibility
+	}
+	ownership := OwnershipScopeForMode(mode, organisationId, legacyField, legacyValue)
+
+	var project bson.M
+	switch mode {
+	case TenancyModeLegacy:
+		project = nil
+	case TenancyModeCanonical:
+		if !projectId.IsZero() {
+			project = bson.M{CanonicalProjectField: projectId}
+		}
+	default:
+		project = models.ProjectScopeFilter(organisationId, projectId)
+	}
 	if project == nil {
 		return ownership
 	}
 
 	arms, ok := ownership["$or"].([]bson.M)
 	if !ok {
-		return bson.M{"$and": []bson.M{ownership, project}}
+		return mergeScopes(ownership, project)
 	}
 
 	narrowed := make([]bson.M, 0, len(arms))
 	for _, arm := range arms {
-		combined := bson.M{}
-		for field, test := range arm {
-			combined[field] = test
-		}
-		for field, test := range project {
-			if _, collides := combined[field]; collides {
-				// A field constrained by both halves cannot be merged into one
-				// map without one test silently replacing the other. Fall back
-				// to the conjunctive shape: slower, but never wrong.
-				return bson.M{"$and": []bson.M{ownership, project}}
-			}
-			combined[field] = test
+		combined := mergeScopes(arm, project)
+		if _, conjunctive := combined["$and"]; conjunctive {
+			return bson.M{"$and": []bson.M{ownership, project}}
 		}
 		narrowed = append(narrowed, combined)
 	}
@@ -194,9 +262,29 @@ func ScopeWithProject(organisationId, legacyField, legacyValue string, projectId
 	return bson.M{"$or": narrowed}
 }
 
+func mergeScopes(first, second bson.M) bson.M {
+	combined := bson.M{}
+	for field, test := range first {
+		combined[field] = test
+	}
+	for field, test := range second {
+		if _, collides := combined[field]; collides {
+			return bson.M{"$and": []bson.M{first, second}}
+		}
+		combined[field] = test
+	}
+	return combined
+}
+
 // ScopeWithProject returns the canonical-first ownership filter for this
 // collection, optionally narrowed to a project. It mirrors Scope but threads the
 // selected project id through the shared project predicate.
 func (t TenantField) ScopeWithProject(organisationId, legacyValue string, projectId primitive.ObjectID) bson.M {
 	return ScopeWithProject(organisationId, t.Legacy, legacyValue, projectId)
+}
+
+// ScopeWithProjectForMode returns this collection's organisation/project
+// predicate for the selected migration contract.
+func (t TenantField) ScopeWithProjectForMode(mode TenancyMode, organisationId, legacyValue string, projectId primitive.ObjectID) bson.M {
+	return ScopeWithProjectForMode(mode, organisationId, t.Legacy, legacyValue, projectId)
 }

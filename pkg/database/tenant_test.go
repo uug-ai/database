@@ -9,6 +9,100 @@ import (
 	"go.mongodb.org/mongo-driver/bson/primitive"
 )
 
+func TestParseTenancyMode(t *testing.T) {
+	for input, want := range map[string]TenancyMode{
+		"":                TenancyModeCompatibility,
+		"  ":              TenancyModeCompatibility,
+		"legacy":          TenancyModeLegacy,
+		" COMPATIBILITY ": TenancyModeCompatibility,
+		"Canonical":       TenancyModeCanonical,
+	} {
+		got, err := ParseTenancyMode(input)
+		if err != nil {
+			t.Fatalf("ParseTenancyMode(%q) error = %v", input, err)
+		}
+		if got != want {
+			t.Fatalf("ParseTenancyMode(%q) = %q, want %q", input, got, want)
+		}
+	}
+
+	if _, err := ParseTenancyMode("mixed"); err == nil {
+		t.Fatal("ParseTenancyMode must reject an unknown mode")
+	}
+}
+
+func TestOwnershipScopeForMode(t *testing.T) {
+	organisationId := primitive.NewObjectID().Hex()
+	tests := []struct {
+		name string
+		mode TenancyMode
+		want bson.M
+	}{
+		{name: "legacy", mode: TenancyModeLegacy, want: bson.M{"user_id": "legacy-1"}},
+		{
+			name: "compatibility",
+			mode: TenancyModeCompatibility,
+			want: bson.M{"$or": []bson.M{
+				{"organisationId": organisationId},
+				{"user_id": "legacy-1", "organisationId": bson.M{"$in": bson.A{nil, ""}}},
+			}},
+		},
+		{name: "canonical", mode: TenancyModeCanonical, want: bson.M{"organisationId": organisationId}},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			got := OwnershipScopeForMode(test.mode, organisationId, "user_id", "legacy-1")
+			if !reflect.DeepEqual(got, test.want) {
+				t.Fatalf("OwnershipScopeForMode() = %#v, want %#v", got, test.want)
+			}
+		})
+	}
+}
+
+func TestScopeWithProjectForMode(t *testing.T) {
+	organisation := primitive.NewObjectID()
+	organisationId := organisation.Hex()
+	projectId := models.DefaultProjectId(organisation)
+
+	tests := []struct {
+		name string
+		mode TenancyMode
+		want bson.M
+	}{
+		{name: "legacy", mode: TenancyModeLegacy, want: bson.M{"user_id": "legacy-1"}},
+		{
+			name: "compatibility",
+			mode: TenancyModeCompatibility,
+			want: bson.M{"$or": []bson.M{
+				{
+					"organisationId": organisationId,
+					"projectId":      bson.M{"$in": bson.A{projectId, nil}},
+				},
+				{
+					"user_id":        "legacy-1",
+					"organisationId": bson.M{"$in": bson.A{nil, ""}},
+					"projectId":      bson.M{"$in": bson.A{projectId, nil}},
+				},
+			}},
+		},
+		{
+			name: "canonical",
+			mode: TenancyModeCanonical,
+			want: bson.M{"organisationId": organisationId, "projectId": projectId},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			got := ScopeWithProjectForMode(test.mode, organisationId, "user_id", "legacy-1", projectId)
+			if !reflect.DeepEqual(got, test.want) {
+				t.Fatalf("ScopeWithProjectForMode() = %#v, want %#v", got, test.want)
+			}
+		})
+	}
+}
+
 func TestCanonicalFirstOwnership(t *testing.T) {
 	got := CanonicalFirstOwnership("org-123", "master_user_id", "legacy-abc")
 	want := bson.M{"$or": []bson.M{
