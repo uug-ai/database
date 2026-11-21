@@ -252,10 +252,28 @@ func NewMongoClient(options *MongoOptions) (DatabaseInterface, error) {
 }
 
 func buildMongoClientOptions(options *MongoOptions) (*moptions.ClientOptions, error) {
+	var (
+		opts *moptions.ClientOptions
+		err  error
+	)
 	if options.Uri != "" {
-		return buildMongoClientOptionsFromURI(options)
+		opts, err = buildMongoClientOptionsFromURI(options)
+	} else {
+		opts, err = buildMongoClientOptionsFromComponents(options)
 	}
-	return buildMongoClientOptionsFromComponents(options)
+	if err != nil {
+		return nil, err
+	}
+
+	// Record command metrics for every client, keeping any monitor already
+	// configured (tracing) behind them. The app label is the application
+	// name reported to the server, e.g. appName=hub-api in the URI.
+	var appName string
+	if opts.AppName != nil {
+		appName = *opts.AppName
+	}
+	opts.SetMonitor(NewCommandMetricsMonitor(appName, opts.Monitor))
+	return opts, nil
 }
 
 func buildMongoClientOptionsFromURI(options *MongoOptions) (*moptions.ClientOptions, error) {
