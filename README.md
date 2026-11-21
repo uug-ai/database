@@ -142,6 +142,53 @@ func main() {
 }
 ```
 
+### Command Metrics (Prometheus)
+
+Every client created with `NewMongoClient` records Prometheus counters for the
+commands it sends and the replies it receives. They are registered with the
+Prometheus default registerer, so a service that already serves
+`promhttp.Handler()` exposes them on its existing `/metrics` endpoint without
+further changes. Any monitor already configured (OpenTelemetry tracing) keeps
+receiving every event.
+
+| Metric | Meaning |
+| --- | --- |
+| `mongodb_client_commands_total` | Commands completed, successful or failed |
+| `mongodb_client_command_failures_total` | Commands that returned an error |
+| `mongodb_client_reply_bytes_total` | Uncompressed BSON bytes of successful replies |
+| `mongodb_client_reply_documents_total` | Documents in cursor batches (find, aggregate, getMore) |
+| `mongodb_client_command_duration_seconds_total` | Time spent in commands, as measured by the driver |
+
+Labels: `app` (the application name reported to the server, such as
+`appName=hub-api` in the URI), `database`, `collection` (empty for
+database-level commands) and `command` (`find`, `aggregate`, `getMore`,
+`update`, ...). Every cursor batch is counted, so `find` plus its `getMore`
+calls add up to the full result. After 2,000 distinct label sets in one
+process, new collections are reported as `_other` to bound cardinality.
+
+Reply bytes are the logical response payload: they exclude TLS and wire
+protocol overhead and exceed the wire bytes when compression is negotiated.
+Document contents are never recorded.
+
+Services that build their own `mongo.Client` can install the same monitor:
+
+```go
+opts := options.Client().
+    ApplyURI(uri).
+    SetMonitor(database.NewCommandMetricsMonitor("hub-api", otelmongo.NewMonitor()))
+```
+
+Example queries:
+
+```promql
+# Reply bytes per second by service and collection
+sum by (app, collection) (rate(mongodb_client_reply_bytes_total[5m]))
+
+# Average reply size per command
+sum by (app, collection, command) (rate(mongodb_client_reply_bytes_total[1h]))
+  / sum by (app, collection, command) (rate(mongodb_client_commands_total[1h]))
+```
+
 ### TLS / SSL Connections (e.g. AWS DocumentDB)
 
 MongoDB-compatible services such as AWS DocumentDB can enforce in-transit
@@ -305,6 +352,7 @@ fmt.Printf("Deleted %d documents\n", deleteManyResult.DeletedCount())
 ├── pkg/
 │   └── database/              # Core database implementation
 │       ├── database.go        # Main Database struct
+│       ├── metrics.go         # Prometheus command metrics monitor
 │       ├── mongodb.go         # MongoDB client implementation
 │       ├── mongodb_test.go    # MongoDB tests
 │       └── option.go          # Functional option types
